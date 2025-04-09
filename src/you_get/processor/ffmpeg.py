@@ -17,18 +17,54 @@ except ImportError:
     atexit.register(lambda fd: os.close(fd), DEVNULL)
 
 def get_usable_ffmpeg(cmd):
+    """Check if ffmpeg/avconv is available and return its information.
+
+    This function checks if the given command (ffmpeg or avconv) is available in the system
+    and returns the command, its probe command, and version information.
+
+    Args:
+        cmd (str): The command to check, either 'ffmpeg' or 'avconv'
+
+    Returns:
+        tuple or None: A tuple containing (command, probe_command, version) if the command
+                      is available, or None if it's not available or an error occurs.
+                      The version is a list of integers representing the version numbers.
+    """
+    logger = logging.getLogger('ffmpeg')
     try:
+        # Run the command with -version flag to get version information
         p = subprocess.Popen([cmd, '-version'], stdin=DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         out, err = p.communicate()
+
+        # Check if the process returned successfully
+        if p.returncode != 0:
+            logger.debug(f"{cmd} returned non-zero exit code: {p.returncode}")
+            return None
+
+        # Parse the output to get version information
         vers = str(out, 'utf-8').split('\n')[0].split()
-        assert (vers[0] == 'ffmpeg' and vers[2][0] > '0') or (vers[0] == 'avconv')
+
+        # Verify it's either ffmpeg or avconv
+        if not ((vers[0] == 'ffmpeg' and vers[2][0] > '0') or (vers[0] == 'avconv')):
+            logger.debug(f"Unexpected version format from {cmd}: {vers}")
+            return None
+
+        # Parse version number
         try:
+            # Handle ffmpeg version format which might start with 'n'
             v = vers[2][1:] if vers[2][0] == 'n' else vers[2]
+            # Convert version string to list of integers
             version = [int(i) for i in v.split('.')]
-        except:
+        except (IndexError, ValueError) as e:
+            logger.debug(f"Error parsing version for {cmd}: {e}")
+            # Default to version 1.0 if parsing fails
             version = [1, 0]
-        return cmd, 'ffprobe', version
-    except:
+
+        # Determine the probe command based on the command
+        probe_cmd = 'ffprobe' if cmd == 'ffmpeg' else 'avprobe'
+        return cmd, probe_cmd, version
+    except Exception as e:
+        logger.debug(f"Error checking {cmd}: {e}")
         return None
 
 FFMPEG, FFPROBE, FFMPEG_VERSION = get_usable_ffmpeg('ffmpeg') or get_usable_ffmpeg('avconv') or (None, None, None)
@@ -42,42 +78,124 @@ else:
 def has_ffmpeg_installed():
     return FFMPEG is not None
 
-# Given a list of segments and the output path, generates the concat
-# list and returns the path to the concat list.
 def generate_concat_list(files, output):
+    """Generate a concat list file for FFmpeg.
+
+    This function creates a text file listing all input files in the format
+    required by FFmpeg's concat demuxer. It handles file paths with special
+    characters by using the parameterize function.
+
+    Args:
+        files (list): List of file paths to be concatenated
+        output (str): Output file path (without the .txt extension)
+
+    Returns:
+        str: Path to the generated concat list file
+
+    Raises:
+        IOError: If there's an error writing the concat list file
+    """
+    logger = logging.getLogger('ffmpeg')
     concat_list_path = output + '.txt'
     concat_list_dir = os.path.dirname(concat_list_path)
-    with open(concat_list_path, 'w', encoding='utf-8') as concat_list:
-        for file in files:
-            if os.path.isfile(file):
-                relpath = os.path.relpath(file, start=concat_list_dir)
-                concat_list.write('file %s\n' % parameterize(relpath))
-    return concat_list_path
+
+    # Create directory if it doesn't exist
+    if concat_list_dir and not os.path.exists(concat_list_dir):
+        try:
+            os.makedirs(concat_list_dir)
+        except OSError as e:
+            logger.error(f"Failed to create directory {concat_list_dir}: {e}")
+            raise
+
+    valid_files = [f for f in files if os.path.isfile(f)]
+    if not valid_files:
+        logger.warning("No valid files found for concatenation")
+
+    try:
+        with open(concat_list_path, 'w', encoding='utf-8') as concat_list:
+            for file in files:
+                if os.path.isfile(file):
+                    # Get relative path to avoid issues with absolute paths
+                    relpath = os.path.relpath(file, start=concat_list_dir)
+                    # Escape special characters in the path
+                    concat_list.write(f"file {parameterize(relpath)}\n")
+        return concat_list_path
+    except IOError as e:
+        logger.error(f"Failed to write concat list file {concat_list_path}: {e}")
+        raise
 
 def ffmpeg_concat_av(files, output, ext):
+    """Concatenate audio/video files using FFmpeg.
+
+    This function attempts to merge multiple audio/video files into a single file.
+    It first tries to copy both audio and video streams without re-encoding.
+    If that fails, it tries again with audio re-encoding based on the output format.
+
+    Args:
+        files (list): List of file paths to be concatenated
+        output (str): Output file path
+        ext (str): Output file extension/format (e.g., 'mp4', 'webm')
+
+    Returns:
+        int: 0 on success, non-zero on failure
+    """
+    logger = logging.getLogger('ffmpeg')
     print('Merging video parts... ', end="", flush=True)
+
+    # Filter out non-existent files
+    valid_files = [f for f in files if os.path.isfile(f)]
+    if not valid_files:
+        logger.error("No valid files found for concatenation")
+        return 1
+
+    # First attempt: try to copy both audio and video streams without re-encoding
     params = [FFMPEG] + LOGLEVEL
-    for file in files:
-        if os.path.isfile(file): params.extend(['-i', file])
-    params.extend(['-c', 'copy'])
-    params.extend(['--', output])
-    if subprocess.call(params, stdin=STDIN):
-        print('Merging without re-encode failed.\nTry again re-encoding audio... ', end="", flush=True)
-        try: os.remove(output)
-        except FileNotFoundError: pass
-        params = [FFMPEG] + LOGLEVEL
-        for file in files:
-            if os.path.isfile(file): params.extend(['-i', file])
-        params.extend(['-c:v', 'copy'])
-        if ext == 'mp4':
-            params.extend(['-c:a', 'aac'])
-            params.extend(['-strict', 'experimental'])
-        elif ext == 'webm':
-            params.extend(['-c:a', 'opus'])
-        params.extend(['--', output])
-        return subprocess.call(params, stdin=STDIN)
+    for file in valid_files:
+        params.extend(['-i', file])
+    params.extend(['-c', 'copy', '--', output])
+
+    try:
+        result = subprocess.call(params, stdin=STDIN)
+        if result == 0:
+            return 0  # Success
+    except Exception as e:
+        logger.error(f"Error during first concatenation attempt: {e}")
+        result = 1  # Force retry with re-encoding
+
+    # If first attempt failed, try again with audio re-encoding
+    print('Merging without re-encode failed.\nTry again re-encoding audio... ', end="", flush=True)
+
+    # Remove output file if it exists (might be partially created)
+    try:
+        if os.path.exists(output):
+            os.remove(output)
+    except OSError as e:
+        logger.warning(f"Failed to remove partial output file: {e}")
+
+    # Second attempt: copy video stream but re-encode audio based on format
+    params = [FFMPEG] + LOGLEVEL
+    for file in valid_files:
+        params.extend(['-i', file])
+
+    # Always copy video stream to avoid quality loss
+    params.extend(['-c:v', 'copy'])
+
+    # Select audio codec based on output format
+    if ext == 'mp4':
+        params.extend(['-c:a', 'aac', '-strict', 'experimental'])
+    elif ext == 'webm':
+        params.extend(['-c:a', 'opus'])
     else:
-        return 0
+        # For other formats, try to copy audio or use a default codec
+        params.extend(['-c:a', 'copy'])
+
+    params.extend(['--', output])
+
+    try:
+        return subprocess.call(params, stdin=STDIN)
+    except Exception as e:
+        logger.error(f"Error during second concatenation attempt: {e}")
+        return 1
 
 def ffmpeg_convert_ts_to_mkv(files, output='output.mkv'):
     for file in files:
