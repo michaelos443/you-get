@@ -1,5 +1,20 @@
 #!/usr/bin/env python
 
+"""
+You-Get Common Module
+
+This module contains the core functionality of You-Get, including:
+- Site-specific extractors mapping
+- Common utilities for downloading and processing media files
+- Command-line argument parsing and processing
+- Network request handling and cookie management
+- Output formatting and logging
+
+The module serves as the central hub for the You-Get downloader,
+coordinating between different site extractors and providing
+the shared infrastructure needed across the application.
+"""
+
 import io
 import os
 import re
