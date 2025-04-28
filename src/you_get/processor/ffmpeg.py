@@ -208,40 +208,97 @@ def ffmpeg_convert_ts_to_mkv(files, output='output.mkv'):
     return
 
 def ffmpeg_concat_mp4_to_mpg(files, output='output.mpg'):
+    """Concatenate MP4 files to MPG format.
+
+    This function concatenates multiple MP4 files into a single MPG file.
+    It uses the concat demuxer for FFmpeg >= 1.1, or falls back to a
+    more manual approach for older versions.
+
+    Args:
+        files (list): List of MP4 file paths to concatenate
+        output (str): Output file path (default: 'output.mpg')
+
+    Returns:
+        bool: True on success
+
+    Raises:
+        Exception: If the concatenation fails
+    """
+    logger = logging.getLogger('ffmpeg')
+    print('Merging video parts... ', end="", flush=True)
+
+    # Filter out non-existent files
+    valid_files = [f for f in files if os.path.isfile(f)]
+    if not valid_files:
+        logger.error("No valid files found for concatenation")
+        raise ValueError("No valid input files found")
+
     # Use concat demuxer on FFmpeg >= 1.1
     if FFMPEG == 'ffmpeg' and (FFMPEG_VERSION[0] >= 2 or (FFMPEG_VERSION[0] == 1 and FFMPEG_VERSION[1] >= 1)):
-        concat_list = generate_concat_list(files, output)
-        params = [FFMPEG] + LOGLEVEL + ['-y', '-f', 'concat', '-safe', '0',
-                                        '-i', concat_list, '-c', 'copy']
-        params.extend(['--', output])
-        if subprocess.call(params, stdin=STDIN) == 0:
-            os.remove(output + '.txt')
+        try:
+            concat_list = generate_concat_list(files, output)
+            params = [FFMPEG] + LOGLEVEL + ['-y', '-f', 'concat', '-safe', '0',
+                                            '-i', concat_list, '-c', 'copy']
+            params.extend(['--', output])
+            subprocess.check_call(params, stdin=STDIN)
+            os.remove(concat_list)
             return True
-        else:
+        except subprocess.CalledProcessError as e:
+            logger.error(f"FFmpeg concat demuxer failed: {e}")
+            # Fall back to the manual method
+            logger.info("Falling back to manual concatenation method")
+        except Exception as e:
+            logger.error(f"Error during concat demuxer: {e}")
             raise
 
-    for file in files:
-        if os.path.isfile(file):
-            params = [FFMPEG] + LOGLEVEL + ['-y', '-i']
-            params.extend([file, file + '.mpg'])
-            subprocess.call(params, stdin=STDIN)
+    # Fallback method for older FFmpeg versions
+    temp_files = []
+    try:
+        # Convert each MP4 to MPG
+        for file in valid_files:
+            temp_file = file + '.mpg'
+            temp_files.append(temp_file)
+            params = [FFMPEG] + LOGLEVEL + ['-y', '-i', file, temp_file]
+            subprocess.check_call(params, stdin=STDIN)
 
-    inputs = [open(file + '.mpg', 'rb') for file in files]
-    with open(output + '.mpg', 'wb') as o:
-        for input in inputs:
-            o.write(input.read())
+        # Concatenate MPG files using efficient chunked reading/writing
+        temp_concat = output + '.mpg'
+        temp_files.append(temp_concat)
+        with open(temp_concat, 'wb') as outfile:
+            for temp_file in [f + '.mpg' for f in valid_files]:
+                if os.path.isfile(temp_file):
+                    with open(temp_file, 'rb') as infile:
+                        # Read and write in chunks to avoid loading entire files into memory
+                        chunk_size = 8192 * 1024  # 8MB chunks
+                        while True:
+                            chunk = infile.read(chunk_size)
+                            if not chunk:
+                                break
+                            outfile.write(chunk)
 
-    params = [FFMPEG] + LOGLEVEL + ['-y', '-i']
-    params.append(output + '.mpg')
-    params += ['-vcodec', 'copy', '-acodec', 'copy']
-    params.extend(['--', output])
+        # Convert concatenated MPG to final output
+        params = [FFMPEG] + LOGLEVEL + ['-y', '-i', temp_concat,
+                  '-vcodec', 'copy', '-acodec', 'copy', '--', output]
+        subprocess.check_call(params, stdin=STDIN)
 
-    if subprocess.call(params, stdin=STDIN) == 0:
-        for file in files:
-            os.remove(file + '.mpg')
-        os.remove(output + '.mpg')
+        # Clean up temporary files
+        for temp_file in temp_files:
+            if os.path.isfile(temp_file):
+                os.remove(temp_file)
+
         return True
-    else:
+    except subprocess.CalledProcessError as e:
+        logger.error(f"FFmpeg command failed: {e}")
+        raise
+    except Exception as e:
+        logger.error(f"Error during concatenation: {e}")
+        # Clean up any temporary files if an error occurs
+        for temp_file in temp_files:
+            if os.path.isfile(temp_file):
+                try:
+                    os.remove(temp_file)
+                except:
+                    pass
         raise
 
 def ffmpeg_concat_ts_to_mkv(files, output='output.mkv'):
