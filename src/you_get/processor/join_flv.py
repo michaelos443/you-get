@@ -1,10 +1,18 @@
 #!/usr/bin/env python
+"""
+FLV file processing module for merging multiple FLV files into a single file.
+
+This module provides functionality to validate, read, and merge FLV (Flash Video) files.
+It handles corrupted files gracefully by validating each file before processing and
+skipping invalid ones during the merging process.
+"""
 
 import struct
 import os
 import logging
 from io import BytesIO
 
+# FLV tag type constants
 TAG_TYPE_METADATA = 18
 TAG_TYPE_AUDIO = 8
 TAG_TYPE_VIDEO = 9
@@ -35,16 +43,52 @@ AMF_TYPE_CLASS_OBJECT = 0x10
 AMF_TYPE_AMF3_OBJECT = 0x11
 
 class ECMAObject:
+    """ECMA object implementation for handling ActionScript objects in FLV files.
+
+    This class provides a dictionary-like interface for storing and manipulating
+    ActionScript object data with ordered key-value pairs.
+    """
     def __init__(self, max_number):
+        """Initialize an ECMAObject with a maximum number of entries.
+
+        Args:
+            max_number (int): Maximum number of entries in the object
+        """
         self.max_number = max_number
         self.data = []
         self.map = {}
+
     def put(self, k, v):
+        """Add a key-value pair to the object.
+
+        Args:
+            k: Key
+            v: Value
+        """
         self.data.append((k, v))
         self.map[k] = v
+
     def get(self, k):
+        """Get a value by key.
+
+        Args:
+            k: Key to look up
+
+        Returns:
+            The value associated with the key
+        """
         return self.map[k]
+
     def set(self, k, v):
+        """Update an existing key-value pair.
+
+        Args:
+            k: Key to update
+            v: New value
+
+        Raises:
+            KeyError: If the key doesn't exist
+        """
         for i in range(len(self.data)):
             if self.data[i][0] == k:
                 self.data[i] = (k, v)
@@ -52,22 +96,67 @@ class ECMAObject:
         else:
             raise KeyError(k)
         self.map[k] = v
+
     def keys(self):
+        """Get all keys in the object.
+
+        Returns:
+            A view of all keys
+        """
         return self.map.keys()
+
     def __str__(self):
+        """String representation of the object.
+
+        Returns:
+            String representation
+        """
         return 'ECMAObject<' + repr(self.map) + '>'
+
     def __eq__(self, other):
+        """Check if two ECMAObjects are equal.
+
+        Args:
+            other: Another ECMAObject to compare with
+
+        Returns:
+            bool: True if equal, False otherwise
+        """
         return self.max_number == other.max_number and self.data == other.data
 
 def read_amf_number(stream):
+    """Read an AMF number (double) from a stream.
+
+    Args:
+        stream: Binary stream to read from
+
+    Returns:
+        float: The double value read from the stream
+    """
     return struct.unpack('>d', stream.read(8))[0]
 
 def read_amf_boolean(stream):
+    """Read an AMF boolean from a stream.
+
+    Args:
+        stream: Binary stream to read from
+
+    Returns:
+        bool: The boolean value read from the stream
+    """
     b = read_byte(stream)
     assert b in (0, 1)
     return bool(b)
 
 def read_amf_string(stream):
+    """Read an AMF string from a stream.
+
+    Args:
+        stream: Binary stream to read from
+
+    Returns:
+        str: The string value read from the stream, or None if invalid
+    """
     xx = stream.read(2)
     if xx == b'':
         # dirty fix for the invalid Qiyi flv
@@ -207,6 +296,21 @@ def read_unsigned_medium_int(stream):
     return (x1 << 16) | (x2 << 8) | x3
 
 def read_tag(stream):
+    """Read and validate an FLV tag from a stream.
+
+    Reads the tag header and body, performing validation on:
+    - Tag type (must be audio, video, or metadata)
+    - Body size (must be reasonable)
+    - Stream ID (must be 0)
+    - Complete body (must match expected size)
+
+    Args:
+        stream: Binary stream to read from
+
+    Returns:
+        tuple: (data_type, timestamp, body_size, body, previous_tag_size) if valid,
+               None if invalid or end of file
+    """
     # header size: 15 bytes
     try:
         header = stream.read(15)
@@ -265,6 +369,17 @@ def write_tag(stream, tag):
     stream.write(body)
 
 def read_flv_header(stream):
+    """Read and validate an FLV file header.
+
+    Checks for the FLV signature, version 1, video+audio type flags,
+    and standard data offset.
+
+    Args:
+        stream: Binary stream to read from
+
+    Returns:
+        bool: True if header is valid, False otherwise
+    """
     try:
         header = stream.read(3)
         if header != b'FLV':
@@ -327,11 +442,15 @@ def write_meta_tag(stream, meta_type, meta_data):
 def guess_output(inputs):
     """Guess the output filename based on common prefix of input files.
 
+    Analyzes the input filenames to find the longest common prefix,
+    with special handling for filenames with numbering patterns like
+    'video_part1.flv', 'video_part2.flv', etc.
+
     Args:
         inputs (list): List of input filenames
 
     Returns:
-        str: Guessed output filename
+        str: Guessed output filename, or 'output.flv' if no common prefix found
     """
     import os.path
     inputs = list(map(os.path.basename, inputs))
@@ -350,6 +469,13 @@ def guess_output(inputs):
 
 def validate_flv(file_path):
     """Validate if a file is a valid FLV file.
+
+    Performs multiple validation checks on an FLV file including:
+    - File existence
+    - Minimum file size
+    - Valid FLV header
+    - Valid metadata tag
+    - At least one content tag after metadata
 
     Args:
         file_path (str): Path to the FLV file
@@ -397,12 +523,19 @@ def validate_flv(file_path):
 def concat_flv(flvs, output = None):
     """Concatenate multiple FLV files into one.
 
+    This function validates all input files, skips corrupted ones, and merges
+    valid files into a single output file. It handles metadata properly by
+    combining duration information and adjusting timestamps for seamless playback.
+
     Args:
         flvs (list): List of FLV file paths
         output (str, optional): Output file path
 
     Returns:
         str: Path to the output file
+
+    Raises:
+        ValueError: If no valid FLV files are found
     """
     if not flvs:
         raise ValueError('No FLV files provided')
@@ -516,6 +649,13 @@ def usage():
     print('Usage: [python3] join_flv.py --output TARGET.flv flv...')
 
 def main():
+    """Command-line entry point for the FLV concatenation tool.
+
+    Parses command-line arguments and calls concat_flv with appropriate parameters.
+    Handles errors gracefully with informative error messages.
+
+    Usage: join_flv.py --output TARGET.flv flv...
+    """
     import sys, getopt
     try:
         opts, args = getopt.getopt(sys.argv[1:], "ho:", ["help", "output="])
