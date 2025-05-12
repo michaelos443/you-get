@@ -1,11 +1,25 @@
 #!/usr/bin/env python
 
+"""
+TS File Concatenation Module
+
+This module provides functionality for concatenating multiple MPEG Transport Stream (TS) files
+into a single TS file. It's used by you-get when downloading videos that are split into
+multiple TS segments.
+
+The module can be used as a standalone script or imported as a library. When used as a script,
+it accepts command line arguments to specify input files and output destination.
+
+Example usage as a script:
+    python join_ts.py --output combined.ts segment1.ts segment2.ts segment3.ts
+
+Example usage as a library:
+    from you_get.processor.join_ts import concat_ts
+    concat_ts(['segment1.ts', 'segment2.ts', 'segment3.ts'], 'combined.ts')
+"""
+
 import struct
 from io import BytesIO
-
-##################################################
-# main
-##################################################
 
 def guess_output(inputs):
     import os.path
