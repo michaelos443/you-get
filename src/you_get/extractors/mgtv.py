@@ -3,11 +3,12 @@
 
 from ..common import *
 from ..extractor import VideoExtractor
-
+from itertools import islice
+import os
 from json import loads
 from urllib.parse import urlsplit
-from os.path import dirname
 import re
+from typing import Optional
 
 import base64
 import time
@@ -41,7 +42,7 @@ class MGTV(VideoExtractor):
     playlist_endpoint = 'https://pcweb.api.mgtv.com/episode/list?video_id={video_id}&page={page}&size=30'
 
     @staticmethod
-    def get_vid_from_url(url):
+    def get_vid_from_url(url: str) -> Optional[str]:
         """Extracts video ID from URL.
         """
         vid = match1(url, r'https?://www.mgtv.com/(?:b|l)/\d+/(\d+).html')
@@ -52,16 +53,20 @@ class MGTV(VideoExtractor):
         return vid
 
     # ----------------------------------------------------------------------
-    def get_mgtv_real_url(self, url):
-        """str->list of str
-        Give you the real URLs."""
+    def get_mgtv_real_url(self, url: str) -> tuple:
+        """Fetches the list of actual streaming URLs for a given video.
+        
+        Args:
+            url (str): URL of the video.
+
+        Returns:
+            tuple: Contains M3U URL, segment size, and list of segments.
+        """
         content = loads(get_content(url))
         m3u_url = content['info']
         split = urlsplit(m3u_url)
-
-        base_url = "{scheme}://{netloc}{path}/".format(scheme=split[0],
-                                                       netloc=split[1],
-                                                       path=dirname(split[2]))
+        
+        base_url = f"{split.scheme}://{split.netloc}{split.path}/"
 
         content = get_content(content['info'],
                               headers={'Referer': self.url})  # get the REAL M3U url, maybe to be changed later?
@@ -82,9 +87,13 @@ class MGTV(VideoExtractor):
         content_playlist = get_content(self.playlist_endpoint.format(video_id=self.vid, page=1))
         content_playlist = loads(content_playlist)
         for ep in content_playlist['data']['list']:
-            self.download_by_url('https://www.mgtv.com' + ep['url'], **kwargs)
+            try:
+                self.download_by_url('https://www.mgtv.com' + ep['url'], **kwargs)
+            except Exception as e:
+                log.e(f'Error: {e} for {ep["url"]}')
+                continue
         max_page = content_playlist['data']['total_page']
-        for page in range(2, max_page + 1):
+        for page in islice(range(1, max_page + 1), 1, None):
             content_playlist = get_content(self.playlist_endpoint.format(video_id=self.vid, page=page))
             content_playlist = loads(content_playlist)
             for ep in content_playlist['data']['list']:
@@ -94,7 +103,7 @@ class MGTV(VideoExtractor):
         if self.url:
             self.vid = self.get_vid_from_url(self.url)
         content_info = get_content(self.info_endpoint.format(video_id=self.vid))
-        log.d(content_info)
+        log.d(f"Content info for {self.vid}: {content_info!r}")
         content_info = loads(content_info)
         self.title = content_info['data']['info']['videoName']
 
@@ -116,8 +125,8 @@ class MGTV(VideoExtractor):
         for s in self.stream_types:
             if s['video_profile'] in stream_available.keys():
                 quality_id = self.id_dic[s['video_profile']]
-                url = stream_available[s['video_profile']]
-                if url is None or url == '':
+                url = stream_available.get(s['video_profile'], '')
+                if not url:
                     # skip invalid profile with empty url
                     continue
                 url = domain + re.sub(r'(\&arange\=\d+)', '', url)  # Un-Hum
@@ -143,7 +152,8 @@ class MGTV(VideoExtractor):
                 if not kwargs['info_only']:
                     self.streams[quality_id]['src'] = segment_list_this
 
-    def extract(self, **kwargs):
+    def extract(self, **kwargs: Optional[dict]) -> None:
+        """Extracts the desired stream based on the given parameters."""
         if 'stream_id' in kwargs and kwargs['stream_id']:
             # Extract the stream
             stream_id = kwargs['stream_id']
@@ -161,11 +171,10 @@ class MGTV(VideoExtractor):
         if 'stream_id' in kwargs and kwargs['stream_id']:
             stream_id = kwargs['stream_id']
         else:
-            stream_id = 'null'
+            stream_id = None
 
-        # print video info only
         if 'info_only' in kwargs and kwargs['info_only']:
-            if stream_id != 'null':
+            if stream_id is not None:
                 if 'index' not in kwargs:
                     self.p(stream_id)
                 else:
@@ -180,7 +189,7 @@ class MGTV(VideoExtractor):
                     self.p_i(stream_id)
 
         # default to use the best quality
-        if stream_id == 'null':
+        if stream_id is None:
             stream_id = self.streams_sorted[0]['id']
 
         stream_info = self.streams[stream_id]

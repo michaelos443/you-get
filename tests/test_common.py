@@ -42,3 +42,30 @@ class TestCommon(unittest.TestCase):
 
         # Test with no matches
         self.assertEqual(matchall('No matches here', [r'nonexistent/([^/]+)']), [])
+
+    def test_enhanced_progress_bar(self):
+        """Test the enhanced progress bar functionality."""
+        from you_get.common import EnhancedProgressBar
+        import time
+
+        # Test initialization
+        bar = EnhancedProgressBar(1024 * 1024, 1)  # 1MB file
+        self.assertEqual(bar.total_size, 1024 * 1024)
+        self.assertEqual(bar.total_pieces, 1)
+        self.assertEqual(bar.received, 0)
+
+        # Test size formatting
+        self.assertEqual(bar._format_size(1024), "1.0KB")
+        self.assertEqual(bar._format_size(1024 * 1024), "1.0MB")
+        self.assertEqual(bar._format_size(1024 * 1024 * 1024), "1.0GB")
+
+        # Test time formatting
+        self.assertEqual(bar._format_time(30), "30s")
+        self.assertEqual(bar._format_time(90), "1m30s")
+        self.assertEqual(bar._format_time(3661), "1h1m")
+
+        # Test progress update
+        bar.update_received(512 * 1024)  # 512KB
+        self.assertEqual(bar.received, 512 * 1024)
+
+        bar.done()

@@ -17,7 +17,7 @@ class AcFun(VideoExtractor):
         {'id': '360P', 'qualityType': '360p'}
     ]    
 
-    def prepare(self, **kwargs):
+    def prepare(self, **kwargs: Dict[str, Any]):
         assert re.match(r'https?://[^\.]*\.*acfun\.[^\.]+/(\D|bangumi)/\D\D(\d+)', self.url)
 
         if re.match(r'https?://[^\.]*\.*acfun\.[^\.]+/\D/\D\D(\d+)', self.url):
@@ -43,7 +43,8 @@ class AcFun(VideoExtractor):
             currentVideoInfo = json_data.get('currentVideoInfo')
 
         else:
-            raise NotImplemented            
+            # URL format is not yet supported
+            raise NotImplementedError("This AcFun URL format is not yet supported.")
 
         if 'ksPlayJson' in currentVideoInfo:
             durationMillis = currentVideoInfo['durationMillis']
@@ -56,9 +57,9 @@ class AcFun(VideoExtractor):
             size = durationMillis * stream["avgBitrate"] / 8
             # size = float('inf')
             container = 'mp4'
-            stream_id = stream["qualityLabel"]
-            quality = stream["qualityType"]
-            
+            stream_id = stream.get("qualityLabel")
+            quality = stream.get("qualityType")
+
             stream_data = dict(src=m3u8_url, size=size, container=container, quality=quality)
             self.streams[stream_id] = stream_data
 
@@ -193,7 +194,7 @@ class AcFun(VideoExtractor):
             m3u8_url = getM3u8UrlFromCurrentVideoInfo(currentVideoInfo)
 
         else:
-            raise NotImplemented
+            raise NotImplementedError("This AcFun URL format is not yet supported.")
 
         assert title and m3u8_url
         title = unescape_html(title)
@@ -207,7 +208,7 @@ class AcFun(VideoExtractor):
         if not info_only:
             download_url_ffmpeg(m3u8_url, title, 'mp4', output_dir=output_dir, merge=merge)
 
-site = AcFun()
+site: AcF = AcFun()
 site_info = "AcFun.cn"
 download = site.download_by_url
 download_playlist = playlist_not_supported('acfun')

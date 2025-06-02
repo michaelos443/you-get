@@ -14,12 +14,11 @@ import ssl
 import sqlite3
 import shutil
 import tempfile
-import warnings
 import http.client
 from typing import List, Tuple, Any, Dict, Optional, Callable
-from types import ModuleType
 from http.cookiejar import Cookie, MozillaCookieJar
 from importlib import import_module
+from types import ModuleType
 from urllib import request, parse, error
 from urllib.error import HTTPError, URLError
 
@@ -150,6 +149,7 @@ insecure = False
 m3u8 = False
 postfix = False
 prefix = None
+enhanced_progress = False
 
 fake_headers = {
     'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
@@ -929,6 +929,8 @@ class SimpleProgressBar:
         self.received = 0
         self.speed = ''
         self.last_updated = time.time()
+        self.start_time = time.time()
+        self.speed_samples = []  # For better speed calculation
 
         total_pieces_len = len(str(total_pieces))
         # 38 is the size of all statically known size in self.bar
@@ -967,21 +969,132 @@ class SimpleProgressBar:
 
     def update_received(self, n: int) -> None:
         self.received += n
-        time_diff = time.time() - self.last_updated
-        bytes_ps = n / time_diff if time_diff else 0
-        if bytes_ps >= 1024 ** 3:
-            self.speed = '{:4.0f} GB/s'.format(bytes_ps / 1024 ** 3)
-        elif bytes_ps >= 1024 ** 2:
-            self.speed = '{:4.0f} MB/s'.format(bytes_ps / 1024 ** 2)
-        elif bytes_ps >= 1024:
-            self.speed = '{:4.0f} kB/s'.format(bytes_ps / 1024)
+        current_time = time.time()
+        time_diff = current_time - self.last_updated
+
+        # Calculate instantaneous speed
+        bytes_ps = n / time_diff if time_diff > 0 else 0
+
+        # Keep a rolling average of speed samples for better ETA calculation
+        if bytes_ps > 0:
+            self.speed_samples.append(bytes_ps)
+            # Keep only last 10 samples for rolling average
+            if len(self.speed_samples) > 10:
+                self.speed_samples.pop(0)
+
+        # Use average speed for more stable display
+        avg_speed = sum(self.speed_samples) / len(self.speed_samples) if self.speed_samples else 0
+
+        # Format speed display
+        if avg_speed >= 1024 ** 3:
+            self.speed = '{:4.0f} GB/s'.format(avg_speed / 1024 ** 3)
+        elif avg_speed >= 1024 ** 2:
+            self.speed = '{:4.0f} MB/s'.format(avg_speed / 1024 ** 2)
+        elif avg_speed >= 1024:
+            self.speed = '{:4.0f} kB/s'.format(avg_speed / 1024)
         else:
-            self.speed = '{:4.0f}  B/s'.format(bytes_ps)
+            self.speed = '{:4.0f}  B/s'.format(avg_speed)
+
+        self.last_updated = current_time
+        self.update()
+
+    def update_piece(self, n: int) -> None:
+        self.current_piece = n
+
+    def done(self) -> None:
+        if self.displayed:
+            print()
+            self.displayed = False
+
+
+class EnhancedProgressBar:
+    """
+    Enhanced progress bar with ETA, better formatting, and detailed statistics.
+    """
+
+    term_size = term.get_terminal_size()[1]
+
+    def __init__(self, total_size: int, total_pieces: int = 1) -> None:
+        self.displayed = False
+        self.total_size = total_size
+        self.total_pieces = total_pieces
+        self.current_piece = 1
+        self.received = 0
+        self.start_time = time.time()
+        self.last_updated = time.time()
+        self.speed_samples = []
+
+    def _format_time(self, seconds: float) -> str:
+        """Format time in human readable format."""
+        if seconds < 60:
+            return f"{int(seconds)}s"
+        elif seconds < 3600:
+            return f"{int(seconds // 60)}m{int(seconds % 60)}s"
+        else:
+            hours = int(seconds // 3600)
+            minutes = int((seconds % 3600) // 60)
+            return f"{hours}h{minutes}m"
+
+    def _format_size(self, size: int) -> str:
+        """Format file size in human readable format."""
+        if size >= 1024 ** 3:
+            return f"{size / (1024 ** 3):.1f}GB"
+        elif size >= 1024 ** 2:
+            return f"{size / (1024 ** 2):.1f}MB"
+        elif size >= 1024:
+            return f"{size / 1024:.1f}KB"
+        else:
+            return f"{size}B"
+
+    def update(self) -> None:
+        self.displayed = True
+        current_time = time.time()
+        elapsed = current_time - self.start_time
+
+        # Calculate progress percentage
+        percent = (self.received / self.total_size * 100) if self.total_size > 0 else 0
+
+        # Calculate average speed
+        avg_speed = self.received / elapsed if elapsed > 0 else 0
+
+        # Calculate ETA
+        remaining_bytes = self.total_size - self.received
+        eta_seconds = remaining_bytes / avg_speed if avg_speed > 0 else 0
+
+        # Format components
+        percent_str = f"{percent:5.1f}%"
+        received_str = self._format_size(self.received)
+        total_str = self._format_size(self.total_size)
+        speed_str = f"{self._format_size(avg_speed)}/s" if avg_speed > 0 else "0B/s"
+        eta_str = self._format_time(eta_seconds) if eta_seconds > 0 and percent < 99.9 else "Done"
+        elapsed_str = self._format_time(elapsed)
+
+        # Create progress bar
+        bar_width = max(20, self.term_size - 80)  # Adaptive width
+        filled_width = int(bar_width * percent / 100)
+        bar = "█" * filled_width + "░" * (bar_width - filled_width)
+
+        # Format final display
+        if self.total_pieces > 1:
+            display = f"\r{percent_str} [{bar}] {received_str}/{total_str} {speed_str} ETA:{eta_str} [{self.current_piece}/{self.total_pieces}]"
+        else:
+            display = f"\r{percent_str} [{bar}] {received_str}/{total_str} {speed_str} ETA:{eta_str} Elapsed:{elapsed_str}"
+
+        # Truncate if too long
+        if len(display) > self.term_size:
+            display = display[:self.term_size-3] + "..."
+
+        sys.stdout.write(display)
+        sys.stdout.flush()
+
+    def update_received(self, n: int) -> None:
+        self.received += n
         self.last_updated = time.time()
         self.update()
 
     def update_piece(self, n: int) -> None:
         self.current_piece = n
+        self.update()
 
     def done(self) -> None:
         if self.displayed:
@@ -1125,7 +1238,11 @@ def download_urls(
                 log.w('Skipping %s: file already exists' % output_filepath)
             print()
             return
-        bar = SimpleProgressBar(total_size, len(urls))
+        # Use enhanced progress bar if enabled
+        if enhanced_progress:
+            bar = EnhancedProgressBar(total_size, len(urls))
+        else:
+            bar = SimpleProgressBar(total_size, len(urls))
     else:
         bar = PiecesProgressBar(total_size, len(urls))
 
@@ -1517,63 +1634,20 @@ def parse_url(
 
 
 def download_main(download, download_playlist, urls, playlist, **kwargs):
-    """Enhanced batch download with progress tracking and error handling."""
-    total_urls = len(urls)
-    successful_downloads = 0
-    failed_downloads = []
-
-    # Get retry settings from kwargs or use defaults
-    max_retries = kwargs.get('max_retries', 2)
-
-    for i, url in enumerate(urls, 1):
+    for url in urls:
         if not re.match(r'https?://', url):
             url = 'http://' + url
 
-        # Show progress for batch downloads
-        if total_urls > 1:
-            log.i(f'[{i}/{total_urls}] Processing: {url}')
-
-        # Retry mechanism
-        retry_count = 0
-        download_success = False
-
-        while retry_count <= max_retries and not download_success:
-            try:
-                if m3u8:
-                    if output_filename:
-                        title = output_filename
-                    else:
-                        title = "m3u8file"
-                    download_url_ffmpeg(url=url, title=title,ext = 'mp4',output_dir = '.')
-                elif playlist:
-                    download_playlist(url, **kwargs)
-                else:
-                    download(url, **kwargs)
-
-                download_success = True
-                successful_downloads += 1
-
-            except Exception as e:
-                retry_count += 1
-                if retry_count <= max_retries:
-                    log.w(f'Download failed for {url}, retrying ({retry_count}/{max_retries})...')
-                else:
-                    log.e(f'Download failed for {url} after {max_retries} retries: {str(e)}')
-                    failed_downloads.append({'url': url, 'error': str(e)})
-
-    # Show summary for batch downloads
-    if total_urls > 1:
-        log.i(f'\nBatch download summary:')
-        log.i(f'  Total URLs: {total_urls}')
-        log.i(f'  Successful: {successful_downloads}')
-        log.i(f'  Failed: {len(failed_downloads)}')
-
-        if failed_downloads:
-            log.w(f'\nFailed downloads:')
-            for failed in failed_downloads:
-                log.w(f'  - {failed["url"]}: {failed["error"]}')
-
-    return successful_downloads, failed_downloads
+        if m3u8:
+            if output_filename:
+                title = output_filename
+            else:
+                title = "m3u8file"
+            download_url_ffmpeg(url=url, title=title,ext = 'mp4',output_dir = '.')
+        elif playlist:
+            download_playlist(url, **kwargs)
+        else:
+            download(url, **kwargs)
 
 
 def load_cookies(cookiefile: str) -> None:
@@ -1850,10 +1924,6 @@ def script_main(
         help='Read non-playlist URLs from FILE'
     )
     download_grp.add_argument(
-        '--max-retries', metavar='N', type=int, default=2,
-        help='Maximum number of retries for failed downloads (default: 2)'
-    )
-    download_grp.add_argument(
         '-P', '--password', help='Set video visit password to PASSWORD'
     )
     download_grp.add_argument(
@@ -1909,6 +1979,9 @@ def script_main(
     download_grp.add_argument('-m', '--m3u8', action='store_true', default=False,
         help = 'download video using an m3u8 url')
 
+    download_grp.add_argument('--enhanced-progress', action='store_true', default=False,
+        help='Use enhanced progress bar with ETA and detailed statistics')
+
 
     parser.add_argument('URL', nargs='*', help=argparse.SUPPRESS)
 
@@ -1938,6 +2011,7 @@ def script_main(
     global m3u8
     global postfix
     global prefix
+    global enhanced_progress
     output_filename = args.output_filename
     extractor_proxy = args.extractor_proxy
 
@@ -1961,6 +2035,9 @@ def script_main(
 
     if args.m3u8:
         m3u8 = True
+
+    if args.enhanced_progress:
+        enhanced_progress = True
 
     caption = True
     stream_id = args.format or args.stream or args.itag
@@ -1993,13 +2070,8 @@ def script_main(
                 "and won't make your life easier"
             )
             sys.exit(2)
-        # Enhanced URL processing: skip comments and empty lines
-        for line in args.input_file:
-            line = line.strip()
-            if line and not line.startswith('#'):
-                urls.append(line)
+        urls.extend(line.strip() for line in args.input_file)
         args.input_file.close()
-        log.i(f'Loaded {len(urls)} URLs from input file')
     urls.extend(args.URL)
 
     if not urls:
@@ -2014,8 +2086,6 @@ def script_main(
             extra['extractor_proxy'] = extractor_proxy
         if stream_id:
             extra['stream_id'] = stream_id
-        if hasattr(args, 'max_retries'):
-            extra['max_retries'] = args.max_retries
         download_main(
             download, download_playlist,
             urls, args.playlist,

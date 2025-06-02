@@ -4,8 +4,9 @@ __all__ = ['twitter_download']
 
 from ..common import *
 from .universal import *
+from typing import List
 
-def extract_m3u(source):
+def extract_m3u(source: str):
     r1 = get_content(source)
     s1 = re.findall(r'(/ext_tw_video/.*)', r1)
     s1 += re.findall(r'(/amplify_video/.*)', r1)

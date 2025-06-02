@@ -4,6 +4,7 @@
 from ..common import *
 from ..extractor import VideoExtractor
 from ..util.log import *
+from typing import Optional, List
 
 from json import loads
 
@@ -32,7 +33,7 @@ class QiE(VideoExtractor):
                 return room['room_id']
         log.wtf('No room available for match {}'.format(match_id))
 
-    def get_vid_from_url(self, url):
+    def get_vid_from_url(self, url: str) -> Optional[str]:
         """Extracts video ID from live.qq.com.
         """
         hit = re.search(r'live.qq.com/(\d+)', url)

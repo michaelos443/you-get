@@ -8,6 +8,7 @@ from ..common import *
 import urllib.error
 import urllib.parse
 from ..util import fs
+from typing import Any, Dict
 
 fake_headers_mobile = {
     'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
@@ -17,8 +18,10 @@ fake_headers_mobile = {
     'User-Agent': 'Mozilla/5.0 (Linux; Android 4.4.2; Nexus 4 Build/KOT49H) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/34.0.1847.114 Mobile Safari/537.36'
 }
 
-def miaopai_download_by_fid(fid, output_dir = '.', merge = False, info_only = False, **kwargs):
-    '''Source: Android mobile'''
+def miaopai_download_by_fid(
+        fid: str, output_dir: str = '.', merge: bool = False, info_only: bool = False, **kwargs: Dict[str, Any]
+    ) -> None:
+    """Source: Android mobile"""
     page_url = 'https://video.weibo.com/show?fid=' + fid + '&type=mp4'
 
     mobile_page = get_content(page_url, headers=fake_headers_mobile)
@@ -37,7 +40,13 @@ def miaopai_download_by_fid(fid, output_dir = '.', merge = False, info_only = Fa
         download_urls([url], title, ext, total_size=None, output_dir=output_dir, merge=merge)
 
 
-def miaopai_download_by_wbmp(wbmp_url, fid, output_dir='.', merge=False, info_only=False, **kwargs):
+def miaopai_download_by_wbmp(
+        wbmp_url,
+        fid,
+        output_dir='.',
+        merge=False,
+        info_only=False,
+        **kwargs):
     headers = {}
     headers.update(fake_headers_mobile)
     headers['Host'] = 'imgaliyuncdn.miaopai.com'
@@ -65,7 +74,18 @@ def miaopai_download_by_wbmp(wbmp_url, fid, output_dir='.', merge=False, info_on
         download_urls([video_url], fs.legitimize(title), ext, output_dir=output_dir, headers=headers, **kwargs)
 
 
-def miaopai_download_story(url, output_dir='.', merge=False, info_only=False, **kwargs):
+def miaopai_download_story(
+        url: str, output_dir: str = '.', merge: bool = False, info_only: bool = False, **kwargs: Dict[str, Any]
+    ) -> None:
+    """Downloads the video from the given URL.
+    
+    Args:
+        url (str): URL of the video.
+        output_dir (str, optional): Output directory. Defaults to '.'.
+        merge (bool, optional): Whether to merge the video into a single file. Defaults to False.
+        info_only (bool, optional): Whether to only print the video information. Defaults to False.
+        **kwargs: Additional keyword arguments.
+    """
     data_url = 'https://m.weibo.cn/s/video/object?%s' % url.split('?')[1]
     data_content = get_content(data_url, headers=fake_headers_mobile)
     data = json.loads(data_content)
@@ -78,7 +98,18 @@ def miaopai_download_story(url, output_dir='.', merge=False, info_only=False, **
         download_urls([stream_url], fs.legitimize(title), ext, total_size=None, output_dir=output_dir, headers=fake_headers_mobile, **kwargs)
 
 
-def miaopai_download_h5api(url, output_dir='.', merge=False, info_only=False, **kwargs):
+def miaopai_download_h5api(
+        url: str, output_dir: str = '.', merge: bool = False, info_only: bool = False, **kwargs: Dict[str, Any]
+    ) -> None:
+    """Downloads the video from the given URL.
+    
+    Args:
+        url (str): URL of the video.
+        output_dir (str, optional): Output directory. Defaults to '.'.
+        merge (bool, optional): Whether to merge the video into a single file. Defaults to False.
+        info_only (bool, optional): Whether to only print the video information. Defaults to False.
+        **kwargs: Additional keyword arguments.
+    """
     oid = match1(url, r'/show/(\d{4}:\w+)')
     if oid is None:
         oid = match1(url, r'\?fid=(\d{4}:\w+)')
@@ -125,7 +156,18 @@ def miaopai_download_h5api(url, output_dir='.', merge=False, info_only=False, **
         download_urls([video_url], fs.legitimize(title), ext, total_size=size, output_dir=output_dir, headers=headers, **kwargs)
 
 
-def miaopai_download_direct(url, output_dir='.', merge=False, info_only=False, **kwargs):
+def miaopai_download_direct(
+        url: str, output_dir: str = '.', merge: bool = False, info_only: bool = False, **kwargs: Dict[str, Any]
+    ) -> None:
+    """Directly downloads the video from the given URL.
+    
+    Args:
+        url (str): URL of the video.
+        output_dir (str, optional): Output directory. Defaults to '.'.
+        merge (bool, optional): Whether to merge the video into a single file. Defaults to False.
+        info_only (bool, optional): Whether to only print the video information. Defaults to False.
+        **kwargs: Additional keyword arguments.
+    """
     mobile_page = get_content(url, headers=fake_headers_mobile)
     try:
         title = re.search(r'([\'"])title\1:\s*([\'"])(.+?)\2,', mobile_page).group(3)
@@ -144,7 +186,16 @@ def miaopai_download_direct(url, output_dir='.', merge=False, info_only=False, *
         download_urls([stream_url], fs.legitimize(title), ext, total_size=None, output_dir=output_dir, headers=fake_headers_mobile, **kwargs)
 
 
-def miaopai_download(url, output_dir='.', merge=False, info_only=False, **kwargs):
+def miaopai_download(url: str, output_dir: str = '.', merge: bool = False, info_only: bool = False, **kwargs: Dict[str, Any]) -> None:
+    """Downloads the video from the given URL.
+    
+    Args:
+        url (str): URL of the video.
+        output_dir (str, optional): Output directory. Defaults to '.'.
+        merge (bool, optional): Whether to merge the video into a single file. Defaults to False.
+        info_only (bool, optional): Whether to only print the video information. Defaults to False.
+        **kwargs: Additional keyword arguments.
+    """
     if re.match(r'^http[s]://.*\.weibo\.com/\d+/.+', url):
         return miaopai_download_direct(url, info_only=info_only, output_dir=output_dir, merge=merge, **kwargs)
 

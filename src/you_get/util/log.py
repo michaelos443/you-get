@@ -4,6 +4,7 @@
 from ..version import script_name
 
 import os, sys
+from typing import List, Union
 
 TERM = os.getenv('TERM', '')
 IS_ANSI_TERMINAL = TERM in (
@@ -61,7 +62,7 @@ def sprint(text, *colors):
     """Format text with color or other effects into ANSI escaped string."""
     return "\33[{}m{content}\33[{}m".format(";".join([str(color) for color in colors]), RESET, content=text) if IS_ANSI_TERMINAL and colors else text
 
-def println(text, *colors):
+def println(text: str, *colors: Union[int, List[int]]) -> None:
     """Print text to standard output."""
     sys.stdout.write(sprint(text, *colors) + "\n")
 
@@ -91,7 +92,7 @@ def e(message, exit_code=None):
     if exit_code is not None:
         sys.exit(exit_code)
 
-def wtf(message, exit_code=1):
+def wtf(message, exit_code=1) -> None:
     """What a Terrible Failure!"""
     print_log(message, RED, BOLD)
     if exit_code is not None:

@@ -5,7 +5,7 @@ __all__ = ['ted_download']
 from ..common import *
 import json
 
-def ted_download(url, output_dir='.', merge=True, info_only=False, **kwargs):
+def ted_download(url, output_dir='.', merge=True, info_only=False, **kwargs) -> None:
     html = get_html(url)
     patt = r'"__INITIAL_DATA__"\s*:\s*\{(.+)\}'
     metadata = json.loads('{' + match1(html, patt) + '}')

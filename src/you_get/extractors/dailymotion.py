@@ -18,7 +18,7 @@ def dailymotion_download(url, output_dir='.', merge=True, info_only=False, **kwa
     info = json.loads(match1(html, r'qualities":({.+?}),"'))
     title = match1(html, r'"video_title"\s*:\s*"([^"]+)"') or \
             match1(html, r'"title"\s*:\s*"([^"]+)"')
-    title = unicodize(title)
+    title = unicodize(title)  # Define the title
 
     for quality in ['1080','720','480','380','240','144','auto']:
         try:
@@ -29,6 +29,7 @@ def dailymotion_download(url, output_dir='.', merge=True, info_only=False, **kwa
             pass
 
     mime, ext, size = url_info(real_url)
+    
 
     print_info(site_info, title, mime, size)
     if not info_only:

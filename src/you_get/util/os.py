@@ -2,7 +2,7 @@
 
 from platform import system
 
-def detect_os():
+def detect_os() -> str:
     """Detect operating system.
     """
 

@@ -4,22 +4,31 @@ __all__ = ['letv_download', 'letvcloud_download', 'letvcloud_download_by_vu']
 
 import base64
 import hashlib
+import re
 import random
-import urllib
+import requests
+from urllib import parse
+from typing import Union, Dict, Any, Tuple, List
 
 from ..common import *
+
+LE_TV_CLOUD_API_BASE_URL = 'http://api.letvcloud.com/'
 
 
 # @DEPRECATED
 def get_timestamp():
     tn = random.random()
     url = 'http://api.letv.com/time?tn={}'.format(tn)
-    result = get_content(url)
+    try:
+        result = get_content(url)
+    except Exception as e:
+        print(f"Error retrieving content from {url}: {e}")
+        return None
     return json.loads(result)['stime']
 
 
 # @DEPRECATED
-def get_key(t):
+def get_key(t: int) -> int:
     for s in range(0, 8):
         e = 1 & t
         t >>= 1
@@ -28,14 +37,32 @@ def get_key(t):
     return t ^ 185025305
 
 
-def calcTimeKey(t):
+def calcTimeKey(t: int) -> int:
+    """
+    Calculates a time-based key using bitwise operations.
+
+    Args:
+        t (int): A timestamp used for the calculation.
+
+    Returns:
+        int: The calculated time-based key.
+    """
     ror = lambda val, r_bits,: ((val & (2 ** 32 - 1)) >> r_bits % 32) | (val << (32 - (r_bits % 32)) & (2 ** 32 - 1))
     magic = 185025305
     return ror(t, magic % 17) ^ magic
     # return ror(ror(t,773625421%13)^773625421,773625421%17)
 
 
-def decode(data):
+def decode(data: bytes) -> Union[str, bytes]:
+    """Decodes the given data based on its version.
+
+    Args:
+        data (bytes): The input data to decode, expected to be in bytes format.
+
+    Returns:
+        Union[str, bytes]: The decoded string if the version is 'vc_01', 
+                           otherwise returns the original data as a string.
+    """
     version = data[0:5]
     if version.lower() == b'vc_01':
         # get real m3u8
@@ -55,7 +82,10 @@ def decode(data):
         return str(data)
 
 
-def video_info(vid, **kwargs):
+def video_info(vid: str, **kwargs: Dict[str, Any]) -> Tuple[str, List[str]]:
+    """
+    Retrieves video information and decodes the video URL(s) for a given video ID.
+    """
     url = 'http://player-pc.le.com/mms/out/video/playJson?id={}&platid=1&splatid=105&format=1&tkey={}&domain=www.le.com&region=cn&source=1000&accesyx=1'.format(vid, calcTimeKey(int(time.time())))
     r = get_content(url, decoded=False)
     info = json.loads(str(r, "utf-8"))
@@ -66,6 +96,9 @@ def video_info(vid, **kwargs):
     if "stream_id" in kwargs and kwargs["stream_id"].lower() in support_stream_id:
         stream_id = kwargs["stream_id"]
     else:
+        preferred_streams = ["1080p","720p"]
+        stream_id = next((s for s in preferred_streams if s in support_stream_id),
+                         sorted(support_stream_id, key=lambda i: int(i[1:]))[-1])
         if "1080p" in support_stream_id:
             stream_id = '1080p'
         elif "720p" in support_stream_id:
@@ -77,8 +110,13 @@ def video_info(vid, **kwargs):
     uuid = hashlib.sha1(url.encode('utf8')).hexdigest() + '_0'
     ext = info["playurl"]["dispatch"][stream_id][1].split('.')[-1]
     url = url.replace('tss=0', 'tss=ios')
-    url += "&m3v=1&termid=1&format=1&hwtype=un&ostype=MacOS10.12.4&p1=1&p2=10&p3=-&expect=3&tn={}&vid={}&uuid={}&sign=letv".format(random.random(), vid, uuid)
-
+    
+    url_parts = [
+        "&m3v=1", "&termid=1", "&format=1", "&hwtype=un", "&ostype=MacOS10.12.4",
+        "&p1=1", "&p2=10", "&p3=-", "&expect=3", f"&tn={random.random()}", 
+        f"&vid={vid}", f"&uuid={uuid}", "&sign=letv"
+    ]
+    url += ''.join(url_parts)
     r2 = get_content(url, decoded=False)
     info2 = json.loads(str(r2, "utf-8"))
 
@@ -91,7 +129,14 @@ def video_info(vid, **kwargs):
     return ext, urls
 
 
-def letv_download_by_vid(vid, title, output_dir='.', merge=True, info_only=False, **kwargs):
+def letv_download_by_vid(
+        vid: str,
+        title: str,
+        output_dir: str = '.',
+        merge: bool = True,
+        info_only: bool = False,
+        **kwargs: Dict[str, Any]
+    ) -> None:
     ext, urls = video_info(vid, **kwargs)
     size = 0
     for i in urls:
@@ -103,16 +148,33 @@ def letv_download_by_vid(vid, title, output_dir='.', merge=True, info_only=False
         download_urls(urls, title, ext, size, output_dir=output_dir, merge=merge)
 
 
-def letvcloud_download_by_vu(vu, uu, title=None, output_dir='.', merge=True, info_only=False):
+def letvcloud_download_by_vu(
+        vu,
+        uu,
+        title=None,
+        output_dir='.',
+        merge=True,
+        info_only=False
+    ) -> None:
+    """Downloads content from Letv Cloud based on the provided VU and UU.
+
+    Args:
+        vu (str): The VU parameter for the download.
+        uu (str): The UU parameter for the download.
+        title (str): The title of the video.
+        output_dir (str): The directory to save downloaded files. Default is the current directory.
+        merge (bool): Whether to merge files if applicable. Default is True.
+        info_only (bool): If True, only show info without downloading. Default is False.
+    """
     # ran = float('0.' + str(random.randint(0, 9999999999999999))) # For ver 2.1
     # str2Hash = 'cfflashformatjsonran{ran}uu{uu}ver2.2vu{vu}bie^#@(%27eib58'.format(vu = vu, uu = uu, ran = ran)  #Magic!/ In ver 2.1
     argumet_dict = {'cf': 'flash', 'format': 'json', 'ran': str(int(time.time())), 'uu': str(uu), 'ver': '2.2', 'vu': str(vu), }
     sign_key = '2f9d6924b33a165a6d8b5d3d42f4f987'  # ALL YOUR BASE ARE BELONG TO US
     str2Hash = ''.join([i + argumet_dict[i] for i in sorted(argumet_dict)]) + sign_key
     sign = hashlib.md5(str2Hash.encode('utf-8')).hexdigest()
-    request_info = urllib.request.Request('http://api.letvcloud.com/gpc.php?' + '&'.join([i + '=' + argumet_dict[i] for i in argumet_dict]) + '&sign={sign}'.format(sign=sign))
-    response = urllib.request.urlopen(request_info)
-    data = response.read()
+    request_url = LE_TV_CLOUD_API_BASE_URL + 'gpc.php?' + '&'.join([i + '=' + argumet_dict[i] for i in argumet_dict]) + '&sign={sign}'.format(sign=sign)
+    response = requests.get(request_url)
+    data = response.content
     info = json.loads(data.decode('utf-8'))
     type_available = []
     for video_type in info['data']['video_info']['media']:
@@ -125,12 +187,32 @@ def letvcloud_download_by_vu(vu, uu, title=None, output_dir='.', merge=True, inf
         download_urls(urls, title, ext, size, output_dir=output_dir, merge=merge)
 
 
-def letvcloud_download(url, output_dir='.', merge=True, info_only=False):
+def letvcloud_download(
+    url: str,
+    output_dir: str = '.',
+    merge: bool = True,
+    info_only: bool = False
+) -> None:
+    """Downloads content from Letv Cloud based on the provided URL.
+
+    Args:
+        url (str): The URL containing the query parameters for the download.
+        output_dir (str): The directory to save downloaded files. Default is the current directory.
+        merge (bool): Whether to merge files if applicable. Default is True.
+        info_only (bool): If True, only show info without downloading. Default is False.
+
+    Raises:
+        ValueError: If the required parameters are not found in the URL.
+    """
     qs = parse.urlparse(url).query
     vu = match1(qs, r'vu=([\w]+)')
     uu = match1(qs, r'uu=([\w]+)')
+    if not vu or not uu:
+        raise ValueError("Required parameters not found in the URL.")
     title = "LETV-%s" % vu
-    letvcloud_download_by_vu(vu, uu, title=title, output_dir=output_dir, merge=merge, info_only=info_only)
+    letvcloud_download_by_vu(
+        vu, uu, title=title, output_dir=output_dir, merge=merge, info_only=info_only
+    )
 
 
 def letv_download(url, output_dir='.', merge=True, info_only=False, **kwargs):

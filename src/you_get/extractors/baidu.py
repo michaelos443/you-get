@@ -6,50 +6,80 @@ __all__ = ['baidu_download']
 from ..common import *
 from .embed import *
 from .universal import *
+from typing import Iterable, Dict, Any, Tuple, Optional, List
+import getpass
+from functools import lru_cache
 
 
-def baidu_get_song_data(sid):
-    data = json.loads(get_html(
-        'http://music.baidu.com/data/music/fmlink?songIds=%s' % sid, faker=True))['data']
+BASE_URL = "http://music.baidu.com"
+LYRIC_BASE_URL = f"{BASE_URL}/data/music/fmlink?songIds="
 
-    if data['xcode'] != '':
-        # inside china mainland
-        return data['songList'][0]
-    else:
-        # outside china mainland
+
+@lru_cache(maxsize=128)
+def baidu_get_song_data(
+    sid: str
+) -> Optional[Dict[str, Any]]:
+    """
+    Fetch song data from Baidu Music API by song ID.
+
+    Args:
+        sid (str): Song ID.
+
+    Returns:
+        Optional[Dict[str, Any]]: Song data or None if song not found.
+    """
+    url = f'{LYRIC_BASE_URL}{sid}'
+    try:
+        data = json.loads(get_html(
+            url, faker=True))['data']
+    except json.JSONDecodeError as e:
+        logging.error(f"Failed to parse JSON response from {url} for song ID {sid}: {e}")
         return None
 
+    return data['songList'][0] if data['xcode'] else None
 
-def baidu_get_song_url(data):
+
+def baidu_get_song_url(
+    data: dict
+) -> str:
     return data['songLink']
 
 
-def baidu_get_song_artist(data):
+def baidu_get_song_artist(data: dict) -> str:
     return data['artistName']
 
 
-def baidu_get_song_album(data):
+def baidu_get_song_album(data: dict) -> str:
     return data['albumName']
 
 
-def baidu_get_song_title(data):
+def baidu_get_song_title(data: dict) -> str:
     return data['songName']
 
 
-def baidu_get_song_lyric(data):
+def baidu_get_song_info(data: dict, key: str) -> Optional[str]:
+    return data.get(key)
+
+
+def baidu_get_song_lyric(data: dict) -> Optional[str]:
     lrc = data['lrcLink']
-    return "http://music.baidu.com%s" % lrc if lrc else None
+    return f"http://music.baidu.com{lrc}" if lrc else None
 
 
-def baidu_download_song(sid, output_dir='.', merge=True, info_only=False):
+def baidu_get_song_attribute(data: dict, attribute: str) -> Optional[str]:
+    return data.get(attribute)
+
+
+def baidu_download_song(
+    sid, output_dir='.', merge=True, info_only=False):
     data = baidu_get_song_data(sid)
     if data is not None:
-        url = baidu_get_song_url(data)
+        url = baidu_get_song_info(data, 'songLink')
         title = baidu_get_song_title(data)
         artist = baidu_get_song_artist(data)
         album = baidu_get_song_album(data)
         lrc = baidu_get_song_lyric(data)
-        file_name = "%s - %s - %s" % (title, album, artist)
+        file_name = f"{title} - {album} - {artist}"
     else:
         html = get_html("http://music.baidu.com/song/%s" % sid)
         url = r1(r'data_url="([^"]+)"', html)
@@ -67,15 +97,26 @@ def baidu_download_song(sid, output_dir='.', merge=True, info_only=False):
         print_info(site_info, title, type, size)
         if not info_only:
             download_urls([lrc], file_name, ext, size, output_dir, faker=True)
-    except:
-        pass
+    except Exception as e:
+        logging.error(f"Failed to get lyrics: {e}")
 
 
-def baidu_download_album(aid, output_dir='.', merge=True, info_only=False):
+def baidu_download_album(
+    aid: str, output_dir: str = '.', merge: bool = True, info_only: bool = False
+) -> None:
+    """
+    Downloads an album from Baidu Music.
+
+    Args:
+        aid (str): The ID of the album to download.
+        output_dir (str, optional): The directory to save the downloaded files. Defaults to '.'.
+        merge (bool, optional): Whether to merge the downloaded files into a single file. Defaults to True.
+        info_only (bool, optional): Whether to only print information about the downloaded files. Defaults to False.
+    """
     html = get_html('http://music.baidu.com/album/%s' % aid, faker=True)
-    album_name = r1(r'<h2 class="album-name">(.+?)<\/h2>', html)
+    album_name = r1(r'<h2 class="album-name">(.+?)<\/h2>', html) or "Unknown Album"
     artist = r1(r'<span class="author_list" title="(.+?)">', html)
-    output_dir = '%s/%s - %s' % (output_dir, artist, album_name)
+    output_dir = f'{output_dir}/{artist} - {album_name}'
     ids = json.loads(r1(r'<span class="album-add" data-adddata=\'(.+?)\'>',
                         html).replace('&quot', '').replace(';', '"'))['ids']
     track_nr = 1
@@ -102,7 +143,20 @@ def baidu_download_album(aid, output_dir='.', merge=True, info_only=False):
         track_nr += 1
 
 
-def baidu_download(url, output_dir='.', stream_type=None, merge=True, info_only=False, **kwargs):
+def baidu_download(
+    url: str, output_dir: str = '.', stream_type: Optional[str] = None, merge: bool = True, info_only: bool = False, **kwargs: Dict[str, Any]
+) -> None:
+    """
+    Downloads a song, album, or image from Baidu Music or Baidu Tieba.
+
+    Args:
+        url (str): The URL of the song, album, or image to download.
+        output_dir (str, optional): The directory to save the downloaded file. Defaults to '.'.
+        stream_type (Optional[str], optional): The stream type to download. Defaults to None.
+        merge (bool, optional): Whether to merge the downloaded files into a single file. Defaults to True.
+        info_only (bool, optional): Whether to only print information about the downloaded file. Defaults to False.
+        **kwargs: Additional keyword arguments.
+    """
 
     if re.match(r'https?://pan.baidu.com', url):
         real_url, title, ext, size = baidu_pan_download(url)
@@ -147,7 +201,7 @@ def baidu_download(url, output_dir='.', stream_type=None, merge=True, info_only=
             # handle albums
             kw = r1(r'kw=([^&]+)', html) or r1(r"kw:'([^']+)'", html)
             tid = r1(r'tid=(\d+)', html) or r1(r"tid:'([^']+)'", html)
-            album_url = 'http://tieba.baidu.com/photo/g/bw/picture/list?kw=%s&tid=%s&pe=%s' % (kw, tid, 1000)
+            album_url = f'http://tieba.baidu.com/photo/g/bw/picture/list?kw={kw}&tid={tid}&pe=1000'
             album_info = json.loads(get_content(album_url))
             for i in album_info['data']['pic_list']:
                 urls.append(
@@ -162,7 +216,16 @@ def baidu_download(url, output_dir='.', stream_type=None, merge=True, info_only=
                               output_dir=output_dir, merge=False)
 
 
-def baidu_pan_download(url):
+def baidu_pan_download(url: str) -> tuple:
+    """
+    Handles the downloading of files from Baidu Pan.
+
+    Args:
+        url (str): The URL of the file to download.
+
+    Returns:
+        tuple: A tuple containing the real URL, title, extension, and size of the file.
+    """
     errno_patt = r'errno":([^"]+),'
     refer_url = ""
     fake_headers = {
@@ -225,7 +288,9 @@ def baidu_pan_download(url):
     return real_url, title, ext, size
 
 
-def baidu_pan_parse(html):
+def baidu_pan_parse(
+    html: str
+) -> Tuple[Optional[str], Optional[str], Optional[str], Optional[str], Optional[str], Optional[str], Optional[str]]:
     sign_patt = r'sign":"([^"]+)"'
     timestamp_patt = r'timestamp":([^"]+),'
     appid_patt = r'app_id":"([^"]+)"'
@@ -244,19 +309,19 @@ def baidu_pan_parse(html):
     return sign, timestamp, bdstoken, appid, primary_id, fs_id, uk
 
 
-def baidu_pan_gen_cookies(url, post_data=None):
+def baidu_pan_gen_cookies(url: str, post_data: Optional[Dict[str, Any]] = None) -> str:
     from http import cookiejar
     cookiejar = cookiejar.CookieJar()
     opener = request.build_opener(request.HTTPCookieProcessor(cookiejar))
     resp = opener.open('http://pan.baidu.com')
-    if post_data != None:
+    if post_data is not None:
         resp = opener.open(url, bytes(parse.urlencode(post_data), 'utf-8'))
     return cookjar2hdr(cookiejar)
 
 
-def baidu_pan_protected_share(url):
+def baidu_pan_protected_share(url: str) -> Tuple[str, str, str, str, str, str, str, Dict[str, Any], str]:
     print('This share is protected by password!')
-    inpwd = input('Please provide unlock password: ')
+    inpwd = getpass.getpass('Please provide unlock password: ').strip()
     inpwd = inpwd.replace(' ', '').replace('\t', '')
     print('Please wait...')
     post_pwd = {
@@ -303,20 +368,22 @@ def baidu_pan_protected_share(url):
     return sign, timestamp, bdstoken, appid, primary_id, fs_id, uk, fake_headers, psk
 
 
-def cookjar2hdr(cookiejar):
+def cookjar2hdr(cookiejar: Iterable) -> str:
     cookie_str = ''
     for i in cookiejar:
         cookie_str = cookie_str + i.name + '=' + i.value + ';'
     return cookie_str[:-1]
 
 
-def query_cookiejar(cookiejar, name):
+def query_cookiejar(
+    cookiejar: Iterable, name: str
+) -> str:
     for i in cookiejar:
         if i.name == name:
             return i.value
 
 
-def dict2triplet(dictin):
+def dict2triplet(dictin: Dict[str, Any]) -> List[Tuple[str, str]]:
     out_triplet = []
     for i in dictin:
         out_triplet.append((i, dictin[i]))

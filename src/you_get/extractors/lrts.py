@@ -3,10 +3,26 @@
 __all__ = ['lrts_download']
 
 import logging
+from typing import Dict, Any, List, Optional, Union
 from ..common import *
 from ..util import log, term
 
-def lrts_download(url, output_dir='.', merge=True, info_only=False, **kwargs):
+def lrts_download(
+    url: str,
+    output_dir: str = '.',
+    merge: bool = True,
+    info_only: bool = False,
+    **kwargs: Any
+) -> None:
+    """Downloads audio resources from the specified LRTS URL.
+
+    Args:
+        url(str): The URL to download from.
+        output_dir(str): The directory to save the downloaded files.
+        merge(bool): Whether to merge the downloaded files into a single file.
+        info_only(bool): Whether to only print information about the download.
+        **kwargs(Any): Additional keyword arguments.
+    """
     html = get_html(url)
     args = kwargs.get('args')
     if not args: args = {}

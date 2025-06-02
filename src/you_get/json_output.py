@@ -4,7 +4,7 @@ import json
 # save info from common.print_info()
 last_info = None
 
-def output(video_extractor, pretty_print=True):
+def output(video_extractor, pretty_print=True) -> None:
     ve = video_extractor
     out = {}
     out['url'] = ve.url
@@ -37,7 +37,7 @@ def output(video_extractor, pretty_print=True):
 class VideoExtractor(object):
     pass
 
-def print_info(site_info=None, title=None, type=None, size=None):
+def print_info(site_info=None, title=None, type=None, size=None) -> None:
     global last_info
     # create a VideoExtractor and save info for download_urls()
     ve = VideoExtractor()
@@ -46,7 +46,7 @@ def print_info(site_info=None, title=None, type=None, size=None):
     ve.title = title
     ve.url = None
 
-def download_urls(urls=None, title=None, ext=None, total_size=None, refer=None):
+def download_urls(urls=None, title=None, ext=None, total_size=None, refer=None) -> None:
     ve = last_info
     if not ve:
         ve = VideoExtractor()

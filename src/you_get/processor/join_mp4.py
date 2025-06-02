@@ -6,60 +6,105 @@
 # reader and writer
 ##################################################
 
+import contextlib
 import struct
-from io import BytesIO
+from typing import BinaryIO, List, Optional, Tuple, Callable, Dict
+import io
+from io import BytesIO, BufferedReader
 
-def skip(stream, n):
+MAX_READ_LIMIT = 1024 * 8
+
+def skip(stream: BinaryIO, n: int) -> None:
+    """
+    Skips `n` bytes in the stream.
+    """
     stream.seek(stream.tell() + n)
 
-def skip_zeros(stream, n):
-    assert stream.read(n) == b'\x00' * n
+def skip_zeros(stream: BinaryIO, n: int) -> None:
+    """
+    Skips `n` zeros in the stream.
+    """
+    data = stream.read(n)
+    assert data == b'\x00' * n, f"Expected {n} zeros, but got {data}"
 
-def read_int(stream):
+def read_int(stream: BinaryIO) -> int:
+    """Reads a signed 4-byte integer from the stream in big-endian order."""
     return struct.unpack('>i', stream.read(4))[0]
 
-def read_uint(stream):
+def read_uint(stream: BinaryIO) -> int:
+    """
+    Reads a 4-byte unsigned integer from the stream in big-endian order.
+    """
     return struct.unpack('>I', stream.read(4))[0]
 
-def write_uint(stream, n):
+def write_uint(stream: BinaryIO, n: int) -> None:
+    """
+    Writes a 4-byte unsigned integer to the stream in big-endian order.
+    """
     stream.write(struct.pack('>I', n))
 
-def write_ulong(stream, n):
+def write_ulong(stream: BinaryIO, n: int) -> None:
+    """
+    Writes an 8-byte unsigned long integer to the stream in big-endian order.
+    """
     stream.write(struct.pack('>Q', n))
 
-def read_ushort(stream):
+def read_ushort(stream: BinaryIO) -> int:
+    """
+    Reads a 2-byte unsigned short integer from the stream in big-endian order.
+    """
     return struct.unpack('>H', stream.read(2))[0]
 
-def read_ulong(stream):
+def read_ulong(stream: BinaryIO) -> int:
+    """
+    Reads an 8-byte unsigned long integer from the stream in big-endian order.
+    """
     return struct.unpack('>Q', stream.read(8))[0]
 
-def read_byte(stream):
+def read_byte(stream: BinaryIO) -> int:
+    """
+    Reads a single byte from the stream.
+    """
     return ord(stream.read(1))
 
-def copy_stream(source, target, n):
-    buffer_size = 1024 * 1024
+def copy_stream(source: BinaryIO, target: BinaryIO, n: int) -> None:
+    """
+    Copies `n` bytes from the source stream to the target stream using a buffer.
+    Ensures minimal memory usage by reading in chunks.
+    """
+    buffer_size = min(1024 * 1024, n)
     while n > 0:
-        to_read = min(buffer_size, n)
-        s = source.read(to_read)
-        assert len(s) == to_read, 'no enough data'
-        target.write(s)
-        n -= to_read
+        to_read = min(buffer_size, n)  # Determine how many bytes to read.
+        s = source.read(min(to_read, MAX_READ_LIMIT))
+        if not s:  # Check for the end of stream.
+            raise EOFError('Source stream ended before reading required bytes.')
+
+        target.write(s)  # Write the data to the target stream.
+        n -= len(s)  # Update the remaining bytes to read.
 
 class Atom:
-    def __init__(self, type, size, body):
-        assert len(type) == 4
-        self.type = type
+    def __init__(self, atom_type: bytes, size: int, body: bytes):
+        """
+        Initializes an Atom object with the given type, size, and body.
+        """
+        assert len(atom_type) == 4
+        self.type = atom_type
         self.size = size
         self.body = body
-    def __str__(self):
-        #return '<Atom(%s):%s>' % (self.type, repr(self.body))
-        return '<Atom(%s):%s>' % (self.type, '')
-    def __repr__(self):
+    def __str__(self) -> str:
+        return f'<Atom({self.type}):{self.body}>'
+    def __repr__(self) -> str:
         return str(self)
-    def write1(self, stream):
+    def write1(self, stream: BinaryIO) -> None:
+        """
+        Writes the size and type of the atom to the stream.
+        """
         write_uint(stream, self.size)
         stream.write(self.type)
-    def write(self, stream):
+    def write(self, stream: BinaryIO) -> None:
+        """
+        Writes the body of the atom to the stream.
+        """
         assert type(self.body) == bytes, '%s: %s' % (self.type, type(self.body))
         assert self.size == 8 + len(self.body)
         self.write1(stream)
@@ -70,7 +115,7 @@ class Atom:
 class CompositeAtom(Atom):
     def __init__(self, type, size, body):
         assert isinstance(body, list)
-        Atom.__init__(self, type, size, body)
+        super().__init__(type, size, body)
     def write(self, stream):
         assert type(self.body) == list
         self.write1(stream)
@@ -84,19 +129,20 @@ class CompositeAtom(Atom):
             if a.type == k:
                 return a
         else:
-            raise Exception('atom not found: ' + k)
+            raise ValueError(f'Atom with type {k} not found')
     def get(self, *keys):
         atom = self
         for k in keys:
             atom = atom.get1(k)
         return atom
     def get_all(self, k):
-        return list(filter(lambda x: x.type == k, self.body))
+        return [atom for atom in self.body if atom.type == k]
+        #return list(filter(lambda x: x.type == k, self.body))
 
 class VariableAtom(Atom):
     def __init__(self, type, size, body, variables):
         assert isinstance(body, bytes)
-        Atom.__init__(self, type, size, body)
+        super().__init__(type, size, body)
         self.variables = variables
     def write(self, stream):
         self.write1(stream)
@@ -130,12 +176,39 @@ class VariableAtom(Atom):
         else:
             raise Exception('field not found: '+k)
 
-def read_raw(stream, size, left, type):
-    assert size == left + 8
-    body = stream.read(left)
-    return Atom(type, size, body)
+def read_raw(stream: BinaryIO, size: int, left: int, type_: str) -> Atom:
+    """
+    Reads a raw chunk of data from the stream and returns an Atom object.
 
-def read_udta(stream, size, left, type):
+    Args:
+        stream (BinaryIO): The input stream to read from (e.g., a file-like object)
+        size (int): The total size of the raw data.
+        left (int): The number of bytes left to read from the stream.
+        type (str): The type identifier of the raw data.
+
+    Returns:
+        Atom: An Atom object containing the type, size and raw body of the data.
+    """
+    # Assert that the size is valid.
+    assert size == left + 8
+    # Read the 'left' number of bytes from the stream.
+    body = stream.read(left)
+    # Return an Atom object containing the type, size and body data.
+    return Atom(type_, size, body)
+
+def read_udta(stream: BinaryIO, size: int, left: int, type: str) -> Atom:
+    """
+    Reads a raw chunk of data from the stream and returns an Atom object.
+
+    Args:
+        stream (BinaryIO): The input stream to read from (e.g., a file-like object)
+        size (int): The total size of the raw data.
+        left (int): The number of bytes left to read from the stream.
+        type (str): The type identifier of the raw data.
+
+    Returns:
+        Atom: An Atom object containing the type, size and raw body of the data.
+    """
     assert size == left + 8
     body = stream.read(left)
     class Udta(Atom):
@@ -145,29 +218,43 @@ def read_udta(stream, size, left, type):
             return 0
     return Udta(type, size, body)
 
-def read_body_stream(stream, left):
+def read_body_stream(stream: BinaryIO, left: int) -> Tuple[bytes, BufferedReader]:
+    """
+    Reads a body stream from the stream and returns a tuple containing the body and a BufferedReader object.
+
+    Args:
+        stream (BinaryIO): The input stream to read from (e.g., a file-like object)
+        left (int): The number of bytes left to read from the stream.
+
+    Returns:
+        Tuple[bytes, BufferedReader]: A tuple containing the body and a BufferedReader object.
+    """
     body = stream.read(left)
-    assert len(body) == left
-    return body, BytesIO(body)
+    assert len(body) == left, f"Expected {left} bytes, but got {len(body)}"
+    return body, BufferedReader(BytesIO(body))
 
-def read_full_atom(stream):
+def read_full_atom(stream, return_version=False):
     value = read_uint(stream)
     version = value >> 24
     flags = value & 0xffffff
-    assert version == 0
-    return value
+    return (version, value) if return_version else value
 
-def read_full_atom2(stream):
-    value = read_uint(stream)
-    version = value >> 24
-    flags = value & 0xffffff
-    return version, value
+def read_mvhd(stream: BinaryIO, size: int, left: int, type: str) -> Atom:
+    """
+    Reads a mvhd atom from the stream and returns an Atom object.
 
-def read_mvhd(stream, size, left, type):
+    Args:
+        stream (BinaryIO): The input stream to read from (e.g., a file-like object)
+        size (int): The total size of the atom.
+        left (int): The number of bytes left to read from the stream.
+        type (str): The type identifier of the atom.
+
+    Returns:
+        Atom: An Atom object containing the type, size and body of the mvhd atom.
+    """
     body, stream = read_body_stream(stream, left)
     value = read_full_atom(stream)
     left -= 4
-    
     # new Date(movieTime * 1000 - 2082850791998L); 
     creation_time = read_uint(stream)
     modification_time = read_uint(stream)
@@ -233,9 +320,21 @@ def read_tkhd(stream, size, left, type):
     assert left == 0
     return VariableAtom(b'tkhd', size, body, [('duration', 20, duration, 4)])
 
-def read_mdhd(stream, size, left, type):
+def read_mdhd(stream: BinaryIO, size: int, left: int, type: str) -> Atom:
+    """
+    Reads a mdhd atom from the stream and returns an Atom object.
+
+    Args:
+        stream (BinaryIO): The input stream to read from (e.g., a file-like object)
+        size (int): The size of the atom.
+        left (int): The number of bytes left to read from the stream.
+        type (str): The type identifier of the atom.
+
+    Returns:
+        Atom: An Atom object representing the mdhd atom.
+    """
     body, stream = read_body_stream(stream, left)
-    ver, value = read_full_atom2(stream)
+    ver, value = read_full_atom(stream, return_version=True)
     left -= 4
 
     if ver == 1:
@@ -261,7 +360,7 @@ def read_mdhd(stream, size, left, type):
     assert left == 0
     return VariableAtom(b'mdhd', size, body, var)
 
-def read_hdlr(stream, size, left, type):
+def read_hdlr(stream: BinaryIO, size: int, left: int, atom_type: bytes) -> Atom:
     body, stream = read_body_stream(stream, left)
     value = read_full_atom(stream)
     left -= 4
@@ -278,7 +377,7 @@ def read_hdlr(stream, size, left, type):
     
     return Atom(b'hdlr', size, body)
 
-def read_vmhd(stream, size, left, type):
+def read_vmhd(stream, size, left, type) -> Atom:
     body, stream = read_body_stream(stream, left)
     value = read_full_atom(stream)
     left -= 4
@@ -308,7 +407,7 @@ def read_stsd(stream, size, left, type):
     #return Atom('stsd', size, children)
     class stsd_atom(Atom):
         def __init__(self, type, size, body):
-            Atom.__init__(self, type, size, body)
+            super().__init__(type, size, body)
         def write(self, stream):
             self.write1(stream)
             write_uint(stream, self.body[0])
@@ -371,7 +470,7 @@ def read_stts(stream, size, left, type):
     #return Atom('stts', size, None)
     class stts_atom(Atom):
         def __init__(self, type, size, body):
-            Atom.__init__(self, type, size, body)
+            super().__init__(type, size, body)
         def write(self, stream):
             self.write1(stream)
             write_uint(stream, self.body[0])
@@ -403,7 +502,7 @@ def read_stss(stream, size, left, type):
     #return Atom('stss', size, None)
     class stss_atom(Atom):
         def __init__(self, type, size, body):
-            Atom.__init__(self, type, size, body)
+            super().__init__(type, size, body)
         def write(self, stream):
             self.write1(stream)
             write_uint(stream, self.body[0])
@@ -440,7 +539,7 @@ def read_stsc(stream, size, left, type):
     #return Atom('stsc', size, None)
     class stsc_atom(Atom):
         def __init__(self, type, size, body):
-            Atom.__init__(self, type, size, body)
+            super().__init__(type, size, body)
         def write(self, stream):
             self.write1(stream)
             write_uint(stream, self.body[0])
@@ -476,7 +575,7 @@ def read_stsz(stream, size, left, type):
     #return Atom('stsz', size, None)
     class stsz_atom(Atom):
         def __init__(self, type, size, body):
-            Atom.__init__(self, type, size, body)
+            super().__init__(type, size, body)
         def write(self, stream):
             self.write1(stream)
             write_uint(stream, self.body[0])
@@ -489,7 +588,7 @@ def read_stsz(stream, size, left, type):
             return self.size
     return stsz_atom(b'stsz', size, (value, sample_size, sample_count, sizes))
 
-def read_stco(stream, size, left, type):
+def read_stco(stream: BinaryIO, size: int, left: int, atom_type: bytes) -> Atom:
     value = read_full_atom(stream)
     left -= 4
     
@@ -505,8 +604,8 @@ def read_stco(stream, size, left, type):
     assert left == 0
     #return Atom('stco', size, None)
     class stco_atom(Atom):
-        def __init__(self, type, size, body):
-            Atom.__init__(self, type, size, body)
+        def __init__(self, atom_type, size, body):
+            super().__init__(atom_type, size, body)
         def write(self, stream):
             self.write1(stream)
             write_uint(stream, self.body[0])
@@ -535,7 +634,7 @@ def read_ctts(stream, size, left, type):
     assert left == 0
     class ctts_atom(Atom):
         def __init__(self, type, size, body):
-            Atom.__init__(self, type, size, body)
+            super().__init__(type, size, body)
         def write(self, stream):
             self.write1(stream)
             write_uint(stream, self.body[0])
@@ -594,14 +693,14 @@ def read_esds(stream, size, left, type):
     body = stream.read(left)
     return Atom(b'esds', size, None)
 
-def read_composite_atom(stream, size, left, type):
+def read_composite_atom(stream, size, left, atom_type):
     children = []
     while left > 0:
         atom = read_atom(stream)
         children.append(atom)
         left -= atom.size
     assert left == 0, left
-    return CompositeAtom(type, size, children)
+    return CompositeAtom(atom_type, size, children)
 
 def read_mdat(stream, size, left, type):
     source_start = stream.tell()
@@ -611,7 +710,7 @@ def read_mdat(stream, size, left, type):
     #raise NotImplementedError()
     class mdat_atom(Atom):
         def __init__(self, type, size, body):
-            Atom.__init__(self, type, size, body)
+            super().__init__(type, size, body)
         def write(self, stream):
             self.write1(stream)
             self.write2(stream)
@@ -678,11 +777,24 @@ atom_readers = {
 #subs sub-sample information
 
 
-def read_atom(stream):
+def read_atom(stream: BinaryIO) -> Optional[Atom]:
+    """
+    Reads an atom from the given binary stream.
+
+    Args:
+        stream: A binary stream from which the atom is read.
+    
+    Returns:
+        An atom object if a valid atom is read, otherwise None.
+
+    Raises:
+        NotImplementedError: If the atom type is not supported.
+    """
+    # Read the header from the stream and check if it is empty
     header = stream.read(8)
     if not header:
-        return
-    assert len(header) == 8
+        return None  # Return None if the stream is empty
+    assert len(header) == 8, f"Expected 8 bytes, but got {len(header)}"
     n = 0
     size = struct.unpack('>I', header[:4])[0]
     assert size > 0
@@ -693,30 +805,59 @@ def read_atom(stream):
     if size == 1:
         size = read_ulong(stream)
         n += 8
-    
+
     left = size - n
     if type in atom_readers:
         return atom_readers[type](stream, size, left, type)
-    raise NotImplementedError('%s: %d' % (type, left))
+    raise NotImplementedError(f'Atom type {type} not supported')
 
-def write_atom(stream, atom):
+def write_atom(stream: BinaryIO, atom: Atom) -> None:
+    """
+    Writes an atom to the given binary stream.
+
+    Args:
+        stream: The binary stream to which the atom will be written.
+        atom: The atom object that will be written to the stream.
+    """
     atom.write(stream)
 
-def parse_atoms(stream):
+def parse_atoms(stream: BinaryIO) -> List[Atom]:
+    """
+    Parses all atoms from the given binary stream.
+
+    Args:
+        stream: The binary stream from which the atoms will be parsed.
+
+    Returns:
+        List[Atom]: A list of atoms parsed from the stream.
+    """
     atoms = []
-    while True:
-        atom = read_atom(stream)
-        if atom:
-            atoms.append(atom)
-        else:
-            break
+    while (atom := read_atom(stream)):
+        atoms.append(atom)
     return atoms
 
-def read_mp4(stream):
+def read_mp4(stream: BinaryIO) -> Tuple[List[Atom], Atom, Atom]:
+    """
+    Reads and parses an MP4 file from the given binary stream.
+
+    Args:
+        stream: A binary stream containing the MP4 data.
+    
+    Returns:
+        A tuple containing:
+            - A list of atoms parsed from the stream.
+            - The first moov atom found in the stream.
+            - The first mdat atom found in the stream.
+    """
+    if not isinstance(stream, io.IOBase):
+        raise TypeError(f"Expected io.IOBase, got {type(stream)}")
     print(stream.name)
+    # Parse atoms from the stream
     atoms = parse_atoms(stream)
+    # Extract `moov` and `mdat` atoms using filtering.
     moov = list(filter(lambda x: x.type == b'moov', atoms))
     mdat = list(filter(lambda x: x.type == b'mdat', atoms))
+    # Ensure we have exactly one `moov` and `mdat` atom.
     assert len(moov) == 1
     assert len(mdat) == 1
     moov = moov[0]
@@ -727,27 +868,51 @@ def read_mp4(stream):
 # merge
 ##################################################
 
-def merge_stts(samples_list):
-    sample_list = []
-    for samples in samples_list:
-        #assert len(samples) == 1
-        #sample_list.append(samples[0])
-        sample_list += samples
+def merge_stts(samples_list: List[List[Tuple[int, int]]]) -> List[Tuple[int, int]]:
+    """
+    Merges time-to-sample (stts) data across multiple sample lists.
+
+    Args:
+        samples_list (List[List[Tuple[int, int]]]): List of time-to-sample data to merge.
+
+    Returns:
+        List[Tuple[int, int]]: Merged sample counts and durations.
+    """
+    sample_list = [sample for samples in samples_list for sample in samples]
     counts, durations = zip(*sample_list)
     #assert len(set(durations)) == 1, 'not all durations equal'
     if len(set(durations)) == 1:
         return [(sum(counts), durations[0])]
     return sample_list
 
-def merge_stss(samples, sample_number_list):
+def merge_stss(sample_lists: List[List[int]], sample_numbers: List[int]) -> List[int]:
+    """
+    Merges multiple sample lists into a single flattened list of integers, with each
+    sample being offset by the sum of the previous sample numbers.
+
+    Args:
+        sample_lists (List[List[int]]): A list of sample lists, where each inner list
+        contains integers.
+        sample_numbers (List[int]): A list of integers representing the number of elements
+        in each corresponding sample list.
+
+    Returns:
+        List[int]: A single list containing all the integers from the sample lists, with
+        offsets applied.
+
+    Raises:
+        ValueError: If the lengths of sample_lists and sample_numbers do not match.
+    """
     results = []
     start = 0
-    for samples, sample_number_list in zip(samples, sample_number_list):
-        results.extend(map(lambda x: start + x, samples))
-        start += sample_number_list
+    for sample, number in zip(sample_lists, sample_numbers):
+        results.extend(map(lambda x: start + x, sample))
+        start += number
     return results
 
-def merge_stsc(chunks_list, total_chunk_number_list):
+def merge_stsc(
+        chunks_list: List[List[Tuple[int, int, str]]],
+        total_chunk_number_list: List[int]) -> List[Tuple[int, int, str]]:
     results = []
     chunk_index = 1
     for chunks, total in zip(chunks_list, total_chunk_number_list):
@@ -762,22 +927,56 @@ def merge_stsc(chunks_list, total_chunk_number_list):
             chunk_index += chunk_number
     return results
 
-def merge_stco(offsets_list, mdats):
+def merge_stco(offsets_list: List[List[int]], mdats: List[Atom]) -> List[int]:
+    """
+    Merges stco data across multiple sample lists.
+
+    Args:
+        offsets_list (List[List[int]]): List of stco data to merge.
+        mdats (List[Atom]): List of mdat atoms.
+
+    Returns:
+        List[int]: Merged stco data.
+
+    Raises:
+        ValueError: If the lengths of offsets_list and mdats do not match.
+    """
+    # Ensure inputs are of the same length
+    if len(offsets_list) != len(mdats):
+        raise ValueError(
+            f"Inputs lengths do not match: "
+            f"offsets_list: {len(offsets_list)}, mdats: {len(mdats)}"
+        )
     offset = 0
-    results = []
-    for offsets, mdat in zip(offsets_list, mdats):
-        results.extend(offset + x - mdat.body[1] for x in offsets)
-        offset += mdat.size - 8
+    results = [
+        offset + x - mdat.body[1]
+        for offsets, mdat in zip(offsets_list, mdats)
+        for offset, x in enumerate(offsets)
+    ]
     return results
 
-def merge_stsz(sizes_list):
-    return sum(sizes_list, [])
 
-def merge_mdats(mdats):
+def merge_stsz(sizes_list: List[List[int]]) -> List[int]:
+    """
+    Merges sizes from multiple lists into a single list.
+
+    Args:
+        sizes_list (List[List[int]]): List of stsz data to merge.
+
+    Returns:
+        List[int]: Merged stsz data.
+    """
+    # Check that sizes_list is a list (or iterable)
+    if not isinstance(sizes_list, list):
+        raise TypeError("sizes_list must be a list")
+    return [size for sizes in sizes_list for size in sizes]
+
+
+def merge_mdats(mdats: List[Atom]):
     total_size = sum(x.size - 8 for x in mdats) + 8
     class multi_mdat_atom(Atom):
         def __init__(self, type, size, body):
-            Atom.__init__(self, type, size, body)
+            super().__init__(type, size, body)
         def write(self, stream):
             self.write1(stream)
             self.write2(stream)
@@ -788,10 +987,10 @@ def merge_mdats(mdats):
             return self.size
     return multi_mdat_atom(b'mdat', total_size, mdats)
 
+
 def merge_moov(moovs, mdats):
-    mvhd_duration = 0
-    for x in moovs:
-        mvhd_duration += x.get(b'mvhd').get('duration')
+    assert len(moovs) == len(mdats)
+    mvhd_duration = sum(x.get(b'mvhd').get('duration') for x in moovs)
     tkhd_durations = [0, 0]
     mdhd_durations = [0, 0]
     for x in moovs:
@@ -870,22 +1069,45 @@ def merge_moov(moovs, mdats):
     
     return moov
 
-def merge_mp4s(files, output):
+def merge_mp4s(files: List[str], output: Optional[str] = None) -> Optional[str]:
+    """
+    Merges multiple MP4 files into a single MP4 file.
+
+    Args:
+        files (List[str]): A list of MP4 file paths to be merged.
+        output (Optional[str], optional): The output file path. Defaults to None.
+
+    Returns:
+        Optional[str]: The output file path if successful, otherwise None.
+    """
     assert files
-    ins = [open(mp4, 'rb') for mp4 in files]
+    try:
+        with contextlib.ExitStack() as stack:
+            ins = [stack.enter_context(open(mp4, 'rb')) for mp4 in files]
+    except FileNotFoundError as e:
+        print(f"Failed to open file: {e}")
+        return None
+    # Read and parse MP4 files into atoms, moov, and mdat
     mp4s = list(map(read_mp4, ins))
+    # Extract moov and mdat atoms from each MP4 file
     moovs = list(map(lambda x: x[1], mp4s))
     mdats = list(map(lambda x: x[2], mp4s))
+    # Merge moov and mdat atoms
     moov = merge_moov(moovs, mdats)
     mdat = merge_mdats(mdats)
-    with open(output, 'wb') as output:
-        for x in mp4s[0][0]:
-            if x.type == b'moov':
-                moov.write(output)
-            elif x.type == b'mdat':
-                mdat.write(output)
+    # Guess the output file path if not provided
+    if not output:
+        output = guess_output(files)
+    # Write the merged MP4 file to the output file
+    with open(output, 'wb') as out:
+        for atom in mp4s[0][0]:
+            if atom.type == b'moov':
+                moov.write(out)
+            elif atom.type == b'mdat':
+                mdat.write(out)
             else:
-                x.write(output)
+                atom.write(out)
+    return output
 
 ##################################################
 # main
@@ -893,17 +1115,44 @@ def merge_mp4s(files, output):
 
 # TODO: FIXME: duplicate of join_flv
 
-def guess_output(inputs):
+def guess_output(inputs: List[str]) -> str:
+    """
+    Guesses the common prefix of the input file paths (excluding directories) and
+    returns the base filename with a '.mp4' extension. If no common prefix is found,
+    returns 'output.mp4'.
+
+    Args:
+        inputs (List[str]): A list of input file paths.
+
+    Returns:
+        str: The output file path.
+    """
     import os.path
-    inputs = map(os.path.basename, inputs)
+    # Extract the base filenames from the paths in `inputs`
+    inputs = [os.path.basename(inp) for inp in inputs]
+    # Find the length of the shortest filename to limit comparisons.
     n = min(map(len, inputs))
+    # Iterate over the range from 1 to the length of the shortest filename, in reverse order.
     for i in reversed(range(1, n)):
+        # Check if all filenames have the same prefix of length `i`.
         if len(set(s[:i] for s in inputs)) == 1:
             return inputs[0][:i] + '.mp4'
+    # If no common prefix is found, return 'output.mp4'.
     return 'output.mp4'
 
-def concat_mp4(mp4s, output = None):
+def concat_mp4(mp4s: List[str], output: Optional[str] = None) -> str:
+    """
+    Concatenates multiple MP4 files into a single MP4 file.
+
+    Args:
+        mp4s (List[str]): A list of MP4 file paths to be concatenated.
+        output (Optional[str], optional): The output file path. Defaults to None.
+
+    Returns:
+        str: The output file path.
+    """
     assert mp4s, 'no mp4 file found'
+    # Check if `output` is None or a directory. If so, append the output filename to the directory path.
     import os.path
     if not output:
         output = guess_output(mp4s)
@@ -915,10 +1164,13 @@ def concat_mp4(mp4s, output = None):
     
     return output
 
-def usage():
+def usage() -> None:
+    """
+    Prints the usage information for the script.
+    """
     print('Usage: [python3] join_mp4.py --output TARGET.mp4 mp4...')
 
-def main():
+def main() -> None:
     import sys, getopt
     try:
         opts, args = getopt.getopt(sys.argv[1:], "ho:", ["help", "output="])
@@ -926,18 +1178,18 @@ def main():
         usage()
         sys.exit(1)
     output = None
-    for o, a in opts:
-        if o in ("-h", "--help"):
+    for option, argument in opts:
+        if option in ("-h", "--help"):
             usage()
             sys.exit()
-        elif o in ("-o", "--output"):
-            output = a
+        elif option in ("-o", "--output"):
+            output = argument
         else:
             usage()
             sys.exit(1)
     if not args:
         usage()
-        sys.exit(1)
+        sys.exit(1)  # Exiting the script due to no arguments
     
     concat_mp4(args, output)
 

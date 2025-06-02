@@ -8,7 +8,7 @@ PROJ_METADATA = '%s.json' % PROJ_NAME
 import importlib.util
 import importlib.machinery
 
-def load_source(modname, filename):
+def load_source(modname: str, filename: str):
     loader = importlib.machinery.SourceFileLoader(modname, filename)
     spec = importlib.util.spec_from_file_location(modname, filename, loader=loader)
     module = importlib.util.module_from_spec(spec)
@@ -24,6 +24,7 @@ proj_info = json.loads(open(os.path.join(here, PROJ_METADATA), encoding='utf-8')
 try:
     README = open(os.path.join(here, 'README.rst'), encoding='utf-8').read()
 except:
+    # Set README to empty string if README.rst is not found.
     README = ""
 CHANGELOG = open(os.path.join(here, 'CHANGELOG.rst'), encoding='utf-8').read()
 VERSION = load_source('version', os.path.join(here, 'src/%s/version.py' % PACKAGE_NAME)).__version__

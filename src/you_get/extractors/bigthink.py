@@ -4,6 +4,7 @@ from ..common import *
 from ..extractor import VideoExtractor
 
 import json
+from typing import List, Tuple, Dict, Any
 
 class Bigthink(VideoExtractor):
     name = "Bigthink"
@@ -19,7 +20,9 @@ class Bigthink(VideoExtractor):
     ]
 
     @staticmethod
-    def get_streams_by_id(account_number, video_id):
+    def get_streams_by_id(
+        account_number: int, video_id: int
+    ) -> List[Tuple[str, str]]:
         """
         int, int->list
         
@@ -48,7 +51,9 @@ class Bigthink(VideoExtractor):
 
         return link_list
 
-    def prepare(self, **kwargs):
+    def prepare(
+        self, **kwargs: Dict[str, Any]
+    ) -> None:
 
         html = get_content(self.url)
 
@@ -66,7 +71,9 @@ class Bigthink(VideoExtractor):
             self.stream_types.append({'id': str(i[0])})
             self.streams[i[0]] = {'url': i[1]}
 
-    def extract(self, **kwargs):
+    def extract(
+        self, **kwargs: Dict[str, Any]
+    ) -> None:
         for i in self.streams:
             s = self.streams[i]
             _, s['container'], s['size'] = url_info(s['url'])

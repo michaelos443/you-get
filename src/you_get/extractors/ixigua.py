@@ -8,6 +8,7 @@ import random
 import string
 import ctypes
 from json import loads
+from typing import List, Dict, Any
 from urllib import request
 
 __all__ = ['ixigua_download', 'ixigua_download_playlist_by_url']
@@ -18,7 +19,9 @@ headers = {
 }
 
 
-def ixigua_download(url, output_dir='.', merge=True, info_only=False, stream_id='', **kwargs):
+def ixigua_download(
+        url: str, output_dir: str = '.', merge: bool = True, info_only: bool = False,
+        stream_id: str = '', **kwargs: Any) -> None:
     # example url: https://www.ixigua.com/i6631065141750268420/#mid=63024814422
     headers['cookie'] = "MONITOR_WEB_ID=7892c49b-296e-4499-8704-e47c1b15123; " \
                         "ixigua-a-s=1; ttcid=af99669b6304453480454f1507011d5c234; BD_REF=1; " \
@@ -93,8 +96,8 @@ def ixigua_download(url, output_dir='.', merge=True, info_only=False, stream_id=
             return
 
 
-def convertStreams(video_list, audio_url):
-    streams = []
+def convertStreams(video_list: Any, audio_url: str) -> List[Dict[str, Any]]:
+    streams: List[Dict[str, Any]] = []
     if type(video_list) == dict:
         video_list = video_list.values()
     for dynamic_video in video_list:
@@ -111,7 +114,7 @@ def convertStreams(video_list, audio_url):
     return streams
 
 
-def ixigua_download_playlist_by_url(url, output_dir='.', merge=True, info_only=False, **kwargs):
+def ixigua_download_playlist_by_url(url: str, output_dir: str = '.', merge: bool = True, info_only: bool = False, **kwargs: Any) -> None:
     assert "user" in url, "Only support users to publish video list,Please provide a similar url:" \
                           "https://www.ixigua.com/c/user/6907091136/"
 
