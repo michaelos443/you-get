@@ -16,6 +16,7 @@ def load_source(modname: str, filename: str):
     # Uncomment the following line to cache the module.
     # sys.modules[module.__name__] = module
     loader.exec_module(module)
+    # Return the module object.
     return module
 
 import os, json

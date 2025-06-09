@@ -1010,6 +1010,12 @@ class SimpleProgressBar:
 class EnhancedProgressBar:
     """
     Enhanced progress bar with ETA, better formatting, and detailed statistics.
+    Features:
+    - Rolling average speed calculation
+    - Adaptive progress bar width
+    - Human-readable time and size formatting
+    - ETA calculation with improved accuracy
+    - Visual progress indicators with Unicode characters
     """
 
     term_size = term.get_terminal_size()[1]
@@ -1022,7 +1028,8 @@ class EnhancedProgressBar:
         self.received = 0
         self.start_time = time.time()
         self.last_updated = time.time()
-        self.speed_samples = []
+        self.speed_samples = []  # Store (timestamp, bytes_received) tuples
+        self.max_speed_samples = 10  # Keep last 10 samples for rolling average
 
     def _format_time(self, seconds: float) -> str:
         """Format time in human readable format."""
@@ -1046,6 +1053,29 @@ class EnhancedProgressBar:
         else:
             return f"{size}B"
 
+    def _calculate_rolling_speed(self) -> float:
+        """Calculate speed using rolling average of recent samples."""
+        current_time = time.time()
+
+        # Add current sample
+        self.speed_samples.append((current_time, self.received))
+
+        # Keep only recent samples (last 10 seconds or max_speed_samples)
+        cutoff_time = current_time - 10.0  # 10 seconds window
+        self.speed_samples = [
+            (t, r) for t, r in self.speed_samples
+            if t > cutoff_time
+        ][-self.max_speed_samples:]
+
+        if len(self.speed_samples) < 2:
+            return 0.0
+
+        # Calculate speed from first to last sample
+        time_diff = self.speed_samples[-1][0] - self.speed_samples[0][0]
+        bytes_diff = self.speed_samples[-1][1] - self.speed_samples[0][1]
+
+        return bytes_diff / time_diff if time_diff > 0 else 0.0
+
     def update(self) -> None:
         self.displayed = True
         current_time = time.time()
@@ -1054,31 +1084,51 @@ class EnhancedProgressBar:
         # Calculate progress percentage
         percent = (self.received / self.total_size * 100) if self.total_size > 0 else 0
 
-        # Calculate average speed
-        avg_speed = self.received / elapsed if elapsed > 0 else 0
+        # Calculate rolling average speed for better accuracy
+        rolling_speed = self._calculate_rolling_speed()
 
-        # Calculate ETA
+        # Fallback to overall average if rolling speed is 0
+        avg_speed = rolling_speed if rolling_speed > 0 else (self.received / elapsed if elapsed > 0 else 0)
+
+        # Calculate ETA with improved accuracy
         remaining_bytes = self.total_size - self.received
         eta_seconds = remaining_bytes / avg_speed if avg_speed > 0 else 0
 
-        # Format components
+        # Format components with better precision
         percent_str = f"{percent:5.1f}%"
         received_str = self._format_size(self.received)
         total_str = self._format_size(self.total_size)
         speed_str = f"{self._format_size(avg_speed)}/s" if avg_speed > 0 else "0B/s"
-        eta_str = self._format_time(eta_seconds) if eta_seconds > 0 and percent < 99.9 else "Done"
+        eta_str = self._format_time(eta_seconds) if eta_seconds > 0 and percent < 99.9 else "✓"
         elapsed_str = self._format_time(elapsed)
 
-        # Create progress bar
-        bar_width = max(20, self.term_size - 80)  # Adaptive width
+        # Create enhanced progress bar with better visual indicators
+        bar_width = max(20, self.term_size - 85)  # Adaptive width with more space
         filled_width = int(bar_width * percent / 100)
-        bar = "█" * filled_width + "░" * (bar_width - filled_width)
 
-        # Format final display
-        if self.total_pieces > 1:
-            display = f"\r{percent_str} [{bar}] {received_str}/{total_str} {speed_str} ETA:{eta_str} [{self.current_piece}/{self.total_pieces}]"
+        # Use different characters for different completion levels
+        if percent >= 100:
+            bar = "█" * bar_width
         else:
-            display = f"\r{percent_str} [{bar}] {received_str}/{total_str} {speed_str} ETA:{eta_str} Elapsed:{elapsed_str}"
+            # Add partial character for more precise visual feedback
+            partial_char = ""
+            partial_progress = (bar_width * percent / 100) - filled_width
+            if partial_progress > 0.7:
+                partial_char = "▉"
+            elif partial_progress > 0.5:
+                partial_char = "▊"
+            elif partial_progress > 0.3:
+                partial_char = "▋"
+            elif partial_progress > 0.1:
+                partial_char = "▌"
+
+            bar = "█" * filled_width + partial_char + "░" * (bar_width - filled_width - len(partial_char))
+
+        # Format final display with improved layout
+        if self.total_pieces > 1:
+            display = f"\r{percent_str} [{bar}] {received_str}/{total_str} {speed_str} ETA:{eta_str} Part:[{self.current_piece}/{self.total_pieces}]"
+        else:
+            display = f"\r{percent_str} [{bar}] {received_str}/{total_str} {speed_str} ETA:{eta_str} T:{elapsed_str}"
 
         # Truncate if too long
         if len(display) > self.term_size:
@@ -1089,8 +1139,16 @@ class EnhancedProgressBar:
 
     def update_received(self, n: int) -> None:
         self.received += n
-        self.last_updated = time.time()
-        self.update()
+        current_time = time.time()
+        self.last_updated = current_time
+
+        # Only update display every 0.1 seconds to avoid flickering
+        if not hasattr(self, '_last_display_update'):
+            self._last_display_update = 0
+
+        if current_time - self._last_display_update >= 0.1:
+            self.update()
+            self._last_display_update = current_time
 
     def update_piece(self, n: int) -> None:
         self.current_piece = n
