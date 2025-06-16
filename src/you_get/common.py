@@ -891,6 +891,21 @@ class SimpleProgressBar:
         else:
             self.speed = '{:4.0f}  B/s'.format(bytes_ps)
         self.last_updated = time.time()
+
+        # Emit progress update event
+        try:
+            from .middleware import emit_event, DownloadEvent
+            progress_percent = (self.received / self.total_size * 100) if self.total_size > 0 else 0
+            emit_event(
+                DownloadEvent.PROGRESS_UPDATE,
+                total_size=self.total_size,
+                received=self.received,
+                progress_percent=progress_percent,
+                speed=self.speed
+            )
+        except ImportError:
+            pass  # Middleware not available, continue normally
+
         self.update()
 
     def update_piece(self, n):
@@ -1021,6 +1036,19 @@ def download_urls(
     output_filename = get_output_filename(urls, title, ext, output_dir, merge)
     output_filepath = os.path.join(output_dir, output_filename)
 
+    # Emit download start event
+    try:
+        from .middleware import emit_event, DownloadEvent
+        emit_event(
+            DownloadEvent.DOWNLOAD_START,
+            url=urls[0] if urls else None,
+            title=title,
+            filepath=output_filepath,
+            total_size=total_size
+        )
+    except ImportError:
+        pass  # Middleware not available, continue normally
+
     if total_size:
         if not force and os.path.exists(output_filepath) and not auto_rename\
                 and (os.path.getsize(output_filepath) >= total_size * 0.9\
@@ -1138,6 +1166,19 @@ def download_urls(
 
         else:
             print("Can't merge %s files" % ext)
+
+    # Emit download complete event
+    try:
+        from .middleware import emit_event, DownloadEvent
+        emit_event(
+            DownloadEvent.DOWNLOAD_COMPLETE,
+            url=urls[0] if urls else None,
+            title=title,
+            filepath=output_filepath,
+            total_size=total_size
+        )
+    except ImportError:
+        pass  # Middleware not available, continue normally
 
     print()
 
