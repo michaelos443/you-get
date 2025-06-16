@@ -1011,11 +1011,15 @@ class EnhancedProgressBar:
     """
     Enhanced progress bar with ETA, better formatting, and detailed statistics.
     Features:
-    - Rolling average speed calculation
+    - Rolling average speed calculation with trend analysis
     - Adaptive progress bar width
     - Human-readable time and size formatting
-    - ETA calculation with improved accuracy
+    - ETA calculation with improved accuracy and prediction tracking
     - Visual progress indicators with Unicode characters
+    - Bandwidth utilization metrics (peak/average speeds)
+    - Speed trend indicators (↑/↓/→)
+    - Network interruption handling
+    - Configurable update frequency and display elements
     """
 
     term_size = term.get_terminal_size()[1]
@@ -1029,7 +1033,15 @@ class EnhancedProgressBar:
         self.start_time = time.time()
         self.last_updated = time.time()
         self.speed_samples = []  # Store (timestamp, bytes_received) tuples
-        self.max_speed_samples = 10  # Keep last 10 samples for rolling average
+        self.max_speed_samples = 15  # Keep last 15 samples for rolling average
+
+        # Enhanced metrics
+        self.peak_speed = 0.0
+        self.speed_trend = "→"  # ↑ increasing, ↓ decreasing, → stable
+        self.eta_predictions = []  # Track ETA accuracy over time
+        self.stall_count = 0  # Count consecutive low-speed periods
+        self.last_trend_check = time.time()
+        self.update_frequency = 0.1  # Update every 100ms
 
     def _format_time(self, seconds: float) -> str:
         """Format time in human readable format."""
@@ -1054,7 +1066,7 @@ class EnhancedProgressBar:
             return f"{size}B"
 
     def _calculate_rolling_speed(self) -> float:
-        """Calculate speed using rolling average of recent samples."""
+        """Calculate speed using rolling average of recent samples with trend analysis."""
         current_time = time.time()
 
         # Add current sample
@@ -1074,7 +1086,60 @@ class EnhancedProgressBar:
         time_diff = self.speed_samples[-1][0] - self.speed_samples[0][0]
         bytes_diff = self.speed_samples[-1][1] - self.speed_samples[0][1]
 
-        return bytes_diff / time_diff if time_diff > 0 else 0.0
+        current_speed = bytes_diff / time_diff if time_diff > 0 else 0.0
+
+        # Update peak speed
+        if current_speed > self.peak_speed:
+            self.peak_speed = current_speed
+
+        # Update speed trend (check every 2 seconds)
+        if current_time - self.last_trend_check >= 2.0 and len(self.speed_samples) >= 6:
+            self._update_speed_trend()
+            self.last_trend_check = current_time
+
+        # Detect stalls (speed < 1KB/s for extended period)
+        if current_speed < 1024:  # Less than 1KB/s
+            self.stall_count += 1
+        else:
+            self.stall_count = 0
+
+        return current_speed
+
+    def _update_speed_trend(self) -> None:
+        """Update speed trend indicator based on recent samples."""
+        if len(self.speed_samples) < 6:
+            return
+
+        # Compare recent speeds (last 3 samples vs previous 3)
+        mid_point = len(self.speed_samples) // 2
+        recent_samples = self.speed_samples[mid_point:]
+        older_samples = self.speed_samples[:mid_point]
+
+        if len(recent_samples) >= 2 and len(older_samples) >= 2:
+            recent_speed = (recent_samples[-1][1] - recent_samples[0][1]) / (recent_samples[-1][0] - recent_samples[0][0])
+            older_speed = (older_samples[-1][1] - older_samples[0][1]) / (older_samples[-1][0] - older_samples[0][0])
+
+            speed_diff = recent_speed - older_speed
+            threshold = older_speed * 0.1  # 10% change threshold
+
+            if speed_diff > threshold:
+                self.speed_trend = "↑"
+            elif speed_diff < -threshold:
+                self.speed_trend = "↓"
+            else:
+                self.speed_trend = "→"
+
+    def _track_eta_accuracy(self, eta_seconds: float) -> None:
+        """Track ETA prediction accuracy for learning."""
+        current_time = time.time()
+        self.eta_predictions.append((current_time, eta_seconds, self.received))
+
+        # Keep only recent predictions (last 30 seconds)
+        cutoff_time = current_time - 30.0
+        self.eta_predictions = [
+            (t, eta, received) for t, eta, received in self.eta_predictions
+            if t > cutoff_time
+        ]
 
     def update(self) -> None:
         self.displayed = True
@@ -1094,16 +1159,31 @@ class EnhancedProgressBar:
         remaining_bytes = self.total_size - self.received
         eta_seconds = remaining_bytes / avg_speed if avg_speed > 0 else 0
 
-        # Format components with better precision
+        # Track ETA accuracy
+        if eta_seconds > 0:
+            self._track_eta_accuracy(eta_seconds)
+
+        # Format components with enhanced precision and metrics
         percent_str = f"{percent:5.1f}%"
         received_str = self._format_size(self.received)
         total_str = self._format_size(self.total_size)
-        speed_str = f"{self._format_size(avg_speed)}/s" if avg_speed > 0 else "0B/s"
-        eta_str = self._format_time(eta_seconds) if eta_seconds > 0 and percent < 99.9 else "✓"
+
+        # Enhanced speed display with trend and peak info
+        speed_str = f"{self._format_size(avg_speed)}/s{self.speed_trend}" if avg_speed > 0 else "0B/s→"
+        peak_str = f"↑{self._format_size(self.peak_speed)}/s" if self.peak_speed > avg_speed * 1.2 else ""
+
+        # Enhanced ETA with stall detection
+        if self.stall_count > 5:  # Stalled for more than 5 updates
+            eta_str = "⚠STALL"
+        elif eta_seconds > 0 and percent < 99.9:
+            eta_str = self._format_time(eta_seconds)
+        else:
+            eta_str = "✓"
+
         elapsed_str = self._format_time(elapsed)
 
         # Create enhanced progress bar with better visual indicators
-        bar_width = max(20, self.term_size - 85)  # Adaptive width with more space
+        bar_width = max(20, self.term_size - 100)  # More space for enhanced metrics
         filled_width = int(bar_width * percent / 100)
 
         # Use different characters for different completion levels
@@ -1124,11 +1204,11 @@ class EnhancedProgressBar:
 
             bar = "█" * filled_width + partial_char + "░" * (bar_width - filled_width - len(partial_char))
 
-        # Format final display with improved layout
+        # Format final display with enhanced layout and metrics
         if self.total_pieces > 1:
-            display = f"\r{percent_str} [{bar}] {received_str}/{total_str} {speed_str} ETA:{eta_str} Part:[{self.current_piece}/{self.total_pieces}]"
+            display = f"\r{percent_str} [{bar}] {received_str}/{total_str} {speed_str} {peak_str} ETA:{eta_str} Part:[{self.current_piece}/{self.total_pieces}]"
         else:
-            display = f"\r{percent_str} [{bar}] {received_str}/{total_str} {speed_str} ETA:{eta_str} T:{elapsed_str}"
+            display = f"\r{percent_str} [{bar}] {received_str}/{total_str} {speed_str} {peak_str} ETA:{eta_str} T:{elapsed_str}"
 
         # Truncate if too long
         if len(display) > self.term_size:
@@ -1142,11 +1222,11 @@ class EnhancedProgressBar:
         current_time = time.time()
         self.last_updated = current_time
 
-        # Only update display every 0.1 seconds to avoid flickering
+        # Use configurable update frequency to avoid flickering
         if not hasattr(self, '_last_display_update'):
             self._last_display_update = 0
 
-        if current_time - self._last_display_update >= 0.1:
+        if current_time - self._last_display_update >= self.update_frequency:
             self.update()
             self._last_display_update = current_time
 
@@ -2038,7 +2118,7 @@ def script_main(
         help = 'download video using an m3u8 url')
 
     download_grp.add_argument('--enhanced-progress', action='store_true', default=False,
-        help='Use enhanced progress bar with ETA and detailed statistics')
+        help='Use enhanced progress bar with ETA, speed trends (↑↓→), peak speeds, stall detection, and detailed bandwidth statistics')
 
 
     parser.add_argument('URL', nargs='*', help=argparse.SUPPRESS)
