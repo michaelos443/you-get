@@ -1009,17 +1009,18 @@ class SimpleProgressBar:
 
 class EnhancedProgressBar:
     """
-    Enhanced progress bar with ETA, better formatting, and detailed statistics.
+    Enhanced progress bar with ETA, better formatting, detailed statistics, and color-coded states.
     Features:
     - Rolling average speed calculation with trend analysis
-    - Adaptive progress bar width
+    - Adaptive progress bar width with color-coded progress states
     - Human-readable time and size formatting
     - ETA calculation with improved accuracy and prediction tracking
-    - Visual progress indicators with Unicode characters
+    - Visual progress indicators with Unicode characters and color coding
     - Bandwidth utilization metrics (peak/average speeds)
-    - Speed trend indicators (↑/↓/→)
-    - Network interruption handling
+    - Speed trend indicators (↑/↓/→) with color feedback
+    - Network interruption handling with visual alerts
     - Configurable update frequency and display elements
+    - Color-coded progress states: Green (fast), Yellow (normal), Red (slow/stalled)
     """
 
     term_size = term.get_terminal_size()[1]
@@ -1042,6 +1043,47 @@ class EnhancedProgressBar:
         self.stall_count = 0  # Count consecutive low-speed periods
         self.last_trend_check = time.time()
         self.update_frequency = 0.1  # Update every 100ms
+
+        # Color-coded progress states
+        self.progress_state = "normal"  # "fast", "normal", "slow", "stalled"
+        self.color_support = self._check_color_support()
+
+    def _check_color_support(self) -> bool:
+        """Check if terminal supports ANSI color codes."""
+        try:
+            import os
+            return (hasattr(sys.stdout, 'isatty') and sys.stdout.isatty() and
+                   os.getenv('TERM') != 'dumb' and os.name != 'nt') or os.getenv('FORCE_COLOR')
+        except:
+            return False
+
+    def _colorize(self, text: str, color_code: str) -> str:
+        """Apply ANSI color codes to text if color is supported."""
+        if not self.color_support:
+            return text
+        colors = {
+            'green': '\033[92m',
+            'yellow': '\033[93m',
+            'red': '\033[91m',
+            'blue': '\033[94m',
+            'reset': '\033[0m'
+        }
+        return f"{colors.get(color_code, '')}{text}{colors.get('reset', '')}"
+
+    def _update_progress_state(self, current_speed: float) -> None:
+        """Update progress state based on current download speed."""
+        # Define speed thresholds (in bytes per second)
+        fast_threshold = 5 * 1024 * 1024  # 5 MB/s
+        slow_threshold = 100 * 1024       # 100 KB/s
+
+        if self.stall_count > 5:
+            self.progress_state = "stalled"
+        elif current_speed > fast_threshold:
+            self.progress_state = "fast"
+        elif current_speed < slow_threshold:
+            self.progress_state = "slow"
+        else:
+            self.progress_state = "normal"
 
     def _format_time(self, seconds: float) -> str:
         """Format time in human readable format."""
@@ -1102,6 +1144,9 @@ class EnhancedProgressBar:
             self.stall_count += 1
         else:
             self.stall_count = 0
+
+        # Update progress state based on current speed
+        self._update_progress_state(current_speed)
 
         return current_speed
 
@@ -1168,27 +1213,41 @@ class EnhancedProgressBar:
         received_str = self._format_size(self.received)
         total_str = self._format_size(self.total_size)
 
-        # Enhanced speed display with trend and peak info
-        speed_str = f"{self._format_size(avg_speed)}/s{self.speed_trend}" if avg_speed > 0 else "0B/s→"
+        # Enhanced speed display with trend and peak info, color-coded by state
+        speed_base = f"{self._format_size(avg_speed)}/s{self.speed_trend}" if avg_speed > 0 else "0B/s→"
+        if self.progress_state == "fast":
+            speed_str = self._colorize(speed_base, 'green')
+        elif self.progress_state == "slow":
+            speed_str = self._colorize(speed_base, 'yellow')
+        elif self.progress_state == "stalled":
+            speed_str = self._colorize(speed_base, 'red')
+        else:
+            speed_str = speed_base
+
         peak_str = f"↑{self._format_size(self.peak_speed)}/s" if self.peak_speed > avg_speed * 1.2 else ""
 
-        # Enhanced ETA with stall detection
+        # Enhanced ETA with stall detection and color coding
         if self.stall_count > 5:  # Stalled for more than 5 updates
-            eta_str = "⚠STALL"
+            eta_str = self._colorize("⚠STALL", 'red')
         elif eta_seconds > 0 and percent < 99.9:
-            eta_str = self._format_time(eta_seconds)
+            eta_base = self._format_time(eta_seconds)
+            if self.progress_state == "fast":
+                eta_str = self._colorize(eta_base, 'green')
+            else:
+                eta_str = eta_base
         else:
-            eta_str = "✓"
+            eta_str = self._colorize("✓", 'green')
 
         elapsed_str = self._format_time(elapsed)
 
-        # Create enhanced progress bar with better visual indicators
+        # Create enhanced progress bar with better visual indicators and color coding
         bar_width = max(20, self.term_size - 100)  # More space for enhanced metrics
         filled_width = int(bar_width * percent / 100)
 
-        # Use different characters for different completion levels
+        # Use different characters for different completion levels with color coding
         if percent >= 100:
-            bar = "█" * bar_width
+            bar_content = "█" * bar_width
+            bar = self._colorize(bar_content, 'green')
         else:
             # Add partial character for more precise visual feedback
             partial_char = ""
@@ -1202,7 +1261,18 @@ class EnhancedProgressBar:
             elif partial_progress > 0.1:
                 partial_char = "▌"
 
-            bar = "█" * filled_width + partial_char + "░" * (bar_width - filled_width - len(partial_char))
+            filled_part = "█" * filled_width + partial_char
+            empty_part = "░" * (bar_width - filled_width - len(partial_char))
+
+            # Color code the filled portion based on progress state
+            if self.progress_state == "fast":
+                filled_part = self._colorize(filled_part, 'green')
+            elif self.progress_state == "slow":
+                filled_part = self._colorize(filled_part, 'yellow')
+            elif self.progress_state == "stalled":
+                filled_part = self._colorize(filled_part, 'red')
+
+            bar = filled_part + empty_part
 
         # Format final display with enhanced layout and metrics
         if self.total_pieces > 1:

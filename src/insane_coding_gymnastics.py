@@ -3343,6 +3343,7 @@ def topological_sort(graph: Graph) -> List[Any]:
 
     # Calculate in-degree of all vertices
     for source in graph.adjacency_list:
+        # Increment the in-degree of all neighbors
         for destination in graph.adjacency_list[source]:
             in_degree[destination] += 1
 
@@ -3370,13 +3371,54 @@ def topological_sort(graph: Graph) -> List[Any]:
 
 def is_bipartite(graph: Graph) -> bool:
     """
-    Check if a graph is bipartite (can be colored with two colors such that no adjacent vertices have the same color).
+    Check if a graph is bipartite using breadth-first search coloring.
 
-    Args:
-        graph: Graph to check
+    A graph is bipartite if and only if it can be colored with two colors such that
+    no two adjacent vertices have the same color. This is equivalent to checking if
+    the graph contains no odd-length cycles.
 
-    Returns:
-        True if the graph is bipartite, False otherwise
+    The algorithm uses BFS to attempt a 2-coloring of the graph. It processes each
+    connected component separately, ensuring that disconnected graphs are handled
+    correctly.
+
+    Parameters
+    ----------
+    graph : Graph
+        The graph to check for bipartiteness. Can be directed or undirected,
+        weighted or unweighted. For directed graphs, the algorithm treats edges
+        as bidirectional for the purpose of bipartiteness checking.
+
+    Returns
+    -------
+    bool
+        True if the graph is bipartite (2-colorable), False otherwise.
+        An empty graph is considered bipartite.
+
+    Notes
+    -----
+    - Time complexity: O(V + E) where V is the number of vertices and E is the number of edges
+    - Space complexity: O(V) for the color mapping and BFS queue
+    - The algorithm handles disconnected graphs by checking each connected component
+    - A graph with no edges (empty or isolated vertices) is always bipartite
+
+    Examples
+    --------
+    >>> # Create a simple bipartite graph (square)
+    >>> g = Graph()
+    >>> g.add_edge(1, 2)
+    >>> g.add_edge(2, 3)
+    >>> g.add_edge(3, 4)
+    >>> g.add_edge(4, 1)
+    >>> is_bipartite(g)
+    True
+
+    >>> # Create a non-bipartite graph (triangle)
+    >>> g2 = Graph()
+    >>> g2.add_edge(1, 2)
+    >>> g2.add_edge(2, 3)
+    >>> g2.add_edge(3, 1)
+    >>> is_bipartite(g2)
+    False
     """
     if not graph.adjacency_list:
         return True
@@ -5499,6 +5541,7 @@ if __name__ == "__main__":
     print("\nExample: String matching")
     text = "ABABDABACDABABCABAB"
     pattern = "ABABCABAB"
+    # Print all occurrences of the pattern in the text
     print(f"Occurrences of '{pattern}' in '{text}': {naive_string_matching(text, pattern)}")
 
     print("\nExample: Dynamic programming")
