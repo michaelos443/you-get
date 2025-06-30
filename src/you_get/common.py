@@ -1637,6 +1637,59 @@ def script_main(download, download_playlist, **kwargs):
         help='Show failed downloads that can be resumed'
     )
 
+    # Queue management options
+    queue_grp = parser.add_argument_group(
+        'Download queue options'
+    )
+    queue_grp.add_argument(
+        '--queue', action='store_true',
+        help='Add URL(s) to download queue instead of downloading immediately'
+    )
+    queue_grp.add_argument(
+        '--queue-start', action='store_true',
+        help='Start processing the download queue'
+    )
+    queue_grp.add_argument(
+        '--queue-stop', action='store_true',
+        help='Stop processing the download queue'
+    )
+    queue_grp.add_argument(
+        '--queue-pause', action='store_true',
+        help='Pause the download queue'
+    )
+    queue_grp.add_argument(
+        '--queue-resume', action='store_true',
+        help='Resume the download queue'
+    )
+    queue_grp.add_argument(
+        '--queue-status', action='store_true',
+        help='Show download queue status'
+    )
+    queue_grp.add_argument(
+        '--queue-list', action='store_true',
+        help='List items in download queue'
+    )
+    queue_grp.add_argument(
+        '--queue-clear-completed', action='store_true',
+        help='Remove completed items from queue'
+    )
+    queue_grp.add_argument(
+        '--queue-clear-failed', action='store_true',
+        help='Remove failed items from queue'
+    )
+    queue_grp.add_argument(
+        '--queue-retry-failed', action='store_true',
+        help='Retry all failed items in queue'
+    )
+    queue_grp.add_argument(
+        '--queue-priority', choices=['low', 'normal', 'high', 'urgent'], default='normal',
+        help='Set priority for queued downloads (default: normal)'
+    )
+    queue_grp.add_argument(
+        '--queue-max-concurrent', type=int, default=3,
+        help='Maximum concurrent downloads (default: 3)'
+    )
+
     dry_run_grp = parser.add_argument_group(
         'Dry-run options', '(no actual downloading)'
     )
@@ -1828,6 +1881,116 @@ def script_main(download, download_playlist, **kwargs):
             sys.exit()
         except ImportError:
             log.e("Download history feature not available")
+            sys.exit(1)
+
+    # Handle queue management commands
+    queue_commands = [
+        args.queue_start, args.queue_stop, args.queue_pause, args.queue_resume,
+        args.queue_status, args.queue_list, args.queue_clear_completed,
+        args.queue_clear_failed, args.queue_retry_failed
+    ]
+
+    if any(queue_commands) or args.queue:
+        try:
+            from .queue_manager import get_global_queue, Priority
+            queue = get_global_queue()
+            queue.max_concurrent = args.queue_max_concurrent
+
+            if args.queue_start:
+                queue.start()
+                log.i("Download queue started")
+                sys.exit()
+
+            if args.queue_stop:
+                queue.stop()
+                log.i("Download queue stopped")
+                sys.exit()
+
+            if args.queue_pause:
+                queue.pause()
+                log.i("Download queue paused")
+                sys.exit()
+
+            if args.queue_resume:
+                queue.resume()
+                log.i("Download queue resumed")
+                sys.exit()
+
+            if args.queue_status:
+                status = queue.get_queue_status()
+                print("Download Queue Status:")
+                print("-" * 40)
+                print(f"Status: {status['queue_status'].upper()}")
+                print(f"Active downloads: {status['active_downloads']}/{status['max_concurrent']}")
+                print(f"Total items: {status['total_items']}")
+                if status['item_counts']:
+                    print("Item breakdown:")
+                    for status_name, count in status['item_counts'].items():
+                        print(f"  {status_name}: {count}")
+                sys.exit()
+
+            if args.queue_list:
+                items = queue.list_items()
+                if items:
+                    print("Download Queue Items:")
+                    print("-" * 80)
+                    for item in items:
+                        status_symbol = {
+                            'pending': '⏳', 'downloading': '⬇️', 'completed': '✅',
+                            'failed': '❌', 'paused': '⏸️', 'scheduled': '⏰'
+                        }.get(item['status'], '?')
+                        priority_str = f"[{item['priority'].name}]" if hasattr(item['priority'], 'name') else f"[{item['priority']}]"
+                        print(f"{status_symbol} {priority_str} {item['url']}")
+                        if item['scheduled_time']:
+                            print(f"   Scheduled: {item['scheduled_time'][:19]}")
+                        if item['error_message']:
+                            print(f"   Error: {item['error_message']}")
+                        print()
+                else:
+                    print("Queue is empty")
+                sys.exit()
+
+            if args.queue_clear_completed:
+                count = queue.clear_completed()
+                log.i(f"Cleared {count} completed items")
+                sys.exit()
+
+            if args.queue_clear_failed:
+                count = queue.clear_failed()
+                log.i(f"Cleared {count} failed items")
+                sys.exit()
+
+            if args.queue_retry_failed:
+                count = queue.retry_failed()
+                log.i(f"Reset {count} failed items for retry")
+                sys.exit()
+
+            # If --queue flag is used, add URLs to queue instead of downloading
+            if args.queue and args.URL:
+                priority_map = {
+                    'low': Priority.LOW,
+                    'normal': Priority.NORMAL,
+                    'high': Priority.HIGH,
+                    'urgent': Priority.URGENT
+                }
+                priority = priority_map[args.queue_priority]
+
+                for url in args.URL:
+                    item_id = queue.add_item(
+                        url=url,
+                        priority=priority,
+                        output_dir=args.output_dir,
+                        output_filename=args.output_filename,
+                        max_retries=3
+                    )
+                    log.i(f"Added to queue: {url} (ID: {item_id})")
+
+                log.i(f"Added {len(args.URL)} item(s) to download queue")
+                log.i("Use --queue-start to begin processing the queue")
+                sys.exit()
+
+        except ImportError:
+            log.e("Download queue feature not available")
             sys.exit(1)
 
     if args.debug:
