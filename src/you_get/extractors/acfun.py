@@ -208,7 +208,7 @@ class AcFun(VideoExtractor):
         if not info_only:
             download_url_ffmpeg(m3u8_url, title, 'mp4', output_dir=output_dir, merge=merge)
 
-site: AcF = AcFun()
+site = AcFun()
 site_info = "AcFun.cn"
 download = site.download_by_url
 download_playlist = playlist_not_supported('acfun')

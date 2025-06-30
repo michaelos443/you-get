@@ -14,6 +14,7 @@ import ssl
 import sqlite3
 import shutil
 import tempfile
+import warnings
 import http.client
 from typing import List, Tuple, Any, Dict, Optional, Callable
 from http.cookiejar import Cookie, MozillaCookieJar
