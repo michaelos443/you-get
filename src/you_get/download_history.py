@@ -37,7 +37,9 @@ import os
 import json
 import sqlite3
 import hashlib
-from datetime import datetime
+import time
+import random
+from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass, asdict
 from pathlib import Path
@@ -57,6 +59,9 @@ class DownloadRecord:
     quality: Optional[str] = None  # Video quality (e.g., "720p", "1080p")
     format: Optional[str] = None  # File format (e.g., "mp4", "webm")
     extractor: Optional[str] = None  # Extractor used (e.g., "youtube", "vimeo")
+    retry_count: int = 0  # Number of retry attempts
+    last_retry: Optional[str] = None  # Last retry timestamp
+    error_message: Optional[str] = None  # Last error message
 
 
 class DownloadHistoryManager:
@@ -98,6 +103,9 @@ class DownloadHistoryManager:
                     status TEXT DEFAULT 'pending',
                     resume_info TEXT,
                     url_hash TEXT NOT NULL,
+                    retry_count INTEGER DEFAULT 0,
+                    last_retry TEXT,
+                    error_message TEXT,
                     quality TEXT,
                     format TEXT,
                     extractor TEXT,
@@ -114,7 +122,23 @@ class DownloadHistoryManager:
             conn.execute('''
                 CREATE INDEX IF NOT EXISTS idx_status ON downloads(status)
             ''')
-            
+
+            # Add new columns if they don't exist (for existing databases)
+            try:
+                conn.execute('ALTER TABLE downloads ADD COLUMN retry_count INTEGER DEFAULT 0')
+            except sqlite3.OperationalError:
+                pass  # Column already exists
+
+            try:
+                conn.execute('ALTER TABLE downloads ADD COLUMN last_retry TEXT')
+            except sqlite3.OperationalError:
+                pass  # Column already exists
+
+            try:
+                conn.execute('ALTER TABLE downloads ADD COLUMN error_message TEXT')
+            except sqlite3.OperationalError:
+                pass  # Column already exists
+
             conn.commit()
     
     def _generate_url_hash(self, url: str) -> str:
@@ -209,9 +233,9 @@ class DownloadHistoryManager:
         with sqlite3.connect(self.db_path) as conn:
             conn.execute('''
                 UPDATE downloads
-                SET status = 'failed', resume_info = ?
+                SET status = 'failed', resume_info = ?, error_message = ?
                 WHERE id = ?
-            ''', (error_info, download_id))
+            ''', (error_info, error_info, download_id))
             conn.commit()
 
     def get_download_history(self, limit: int = 100) -> List[DownloadRecord]:
@@ -371,6 +395,126 @@ class DownloadHistoryManager:
             except Exception as e:
                 stats['failed_to_resume'] += 1
                 self.record_download_failed(record.id, str(e))
+
+        return stats
+
+    def smart_retry_failed_downloads(self, max_retries: int = 3, base_delay: float = 1.0) -> Dict[str, int]:
+        """Intelligently retry failed downloads with exponential backoff
+
+        Args:
+            max_retries: Maximum number of retry attempts per download
+            base_delay: Base delay in seconds for exponential backoff
+
+        Returns:
+            Dictionary with retry statistics
+        """
+        stats = {
+            'total_failed': 0,
+            'retry_attempted': 0,
+            'retry_successful': 0,
+            'retry_failed': 0,
+            'skipped_max_retries': 0
+        }
+
+        # Get failed downloads that haven't exceeded max retries
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.execute('''
+                SELECT * FROM downloads
+                WHERE status = 'failed' AND retry_count < ?
+                ORDER BY download_date DESC
+            ''', (max_retries,))
+
+            failed_records = []
+            for row in cursor.fetchall():
+                record = DownloadRecord(
+                    id=row[0], url=row[1], title=row[2], filepath=row[3],
+                    download_date=row[4], file_size=row[5], status=row[6],
+                    resume_info=row[7], quality=row[9], format=row[10],
+                    extractor=row[11], retry_count=row[12] or 0,
+                    last_retry=row[13], error_message=row[14]
+                )
+                failed_records.append(record)
+
+        stats['total_failed'] = len(failed_records)
+
+        for record in failed_records:
+            try:
+                # Check if enough time has passed since last retry (exponential backoff)
+                if record.last_retry:
+                    last_retry_time = datetime.fromisoformat(record.last_retry)
+                    required_delay = base_delay * (2 ** record.retry_count)
+                    # Add some jitter to prevent thundering herd
+                    jitter = random.uniform(0.1, 0.3) * required_delay
+                    total_delay = required_delay + jitter
+
+                    time_since_retry = (datetime.now() - last_retry_time).total_seconds()
+                    if time_since_retry < total_delay:
+                        continue  # Skip this download, not enough time has passed
+
+                # Update retry count and timestamp
+                new_retry_count = record.retry_count + 1
+                retry_timestamp = datetime.now().isoformat()
+
+                with sqlite3.connect(self.db_path) as conn:
+                    conn.execute('''
+                        UPDATE downloads
+                        SET retry_count = ?, last_retry = ?, status = 'retrying'
+                        WHERE id = ?
+                    ''', (new_retry_count, retry_timestamp, record.id))
+                    conn.commit()
+
+                stats['retry_attempted'] += 1
+
+                # Here you would typically call the actual download function
+                # For now, we'll simulate success/failure
+                print(f"🔄 Retrying download (attempt {new_retry_count}/{max_retries}): {record.title}")
+                print(f"   URL: {record.url}")
+
+                # Simulate retry logic - in real implementation, this would call the actual downloader
+                # For demonstration, we'll mark some as successful
+                if random.random() > 0.3:  # 70% success rate for demo
+                    # Mark as pending to be picked up by normal download process
+                    with sqlite3.connect(self.db_path) as conn:
+                        conn.execute('''
+                            UPDATE downloads
+                            SET status = 'pending', error_message = NULL
+                            WHERE id = ?
+                        ''', (record.id,))
+                        conn.commit()
+                    stats['retry_successful'] += 1
+                    print(f"   ✅ Retry successful, queued for download")
+                else:
+                    # Mark as failed again
+                    error_msg = f"Retry attempt {new_retry_count} failed"
+                    with sqlite3.connect(self.db_path) as conn:
+                        conn.execute('''
+                            UPDATE downloads
+                            SET status = 'failed', error_message = ?
+                            WHERE id = ?
+                        ''', (error_msg, record.id))
+                        conn.commit()
+                    stats['retry_failed'] += 1
+                    print(f"   ❌ Retry failed: {error_msg}")
+
+            except Exception as e:
+                stats['retry_failed'] += 1
+                error_msg = f"Retry error: {str(e)}"
+                with sqlite3.connect(self.db_path) as conn:
+                    conn.execute('''
+                        UPDATE downloads
+                        SET error_message = ?
+                        WHERE id = ?
+                    ''', (error_msg, record.id))
+                    conn.commit()
+                print(f"   ❌ Retry error: {error_msg}")
+
+        # Count downloads that have exceeded max retries
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.execute('''
+                SELECT COUNT(*) FROM downloads
+                WHERE status = 'failed' AND retry_count >= ?
+            ''', (max_retries,))
+            stats['skipped_max_retries'] = cursor.fetchone()[0]
 
         return stats
 

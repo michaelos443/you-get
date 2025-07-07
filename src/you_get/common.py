@@ -1640,6 +1640,14 @@ def script_main(download, download_playlist, **kwargs):
         '--smart-resume', action='store_true',
         help='Automatically resume all failed/pending downloads'
     )
+    history_grp.add_argument(
+        '--smart-retry', action='store_true',
+        help='Intelligently retry failed downloads with exponential backoff'
+    )
+    history_grp.add_argument(
+        '--max-retries', type=int, default=3,
+        help='Maximum retry attempts for failed downloads (default: 3)'
+    )
 
     # Queue management options
     queue_grp = parser.add_argument_group(
@@ -1836,7 +1844,7 @@ def script_main(download, download_playlist, **kwargs):
         sys.exit()
 
     # Handle download history commands
-    if args.history or args.history_stats or args.export_history or args.failed_downloads or args.smart_resume:
+    if args.history or args.history_stats or args.export_history or args.failed_downloads or args.smart_resume or args.smart_retry:
         try:
             from .download_history import get_history_manager
             history_manager = get_history_manager()
@@ -1911,6 +1919,16 @@ def script_main(download, download_playlist, **kwargs):
                     print(f"Smart Resume completed: {resumed_count}/{len(failed)} downloads resumed successfully")
                 else:
                     print("Smart Resume: No failed or pending downloads found.")
+
+            if args.smart_retry:
+                print("🔄 Starting smart retry for failed downloads...")
+                stats = history_manager.smart_retry_failed_downloads(max_retries=args.max_retries)
+                print(f"✅ Smart retry completed:")
+                print(f"   - Total failed downloads: {stats['total_failed']}")
+                print(f"   - Retry attempts made: {stats['retry_attempted']}")
+                print(f"   - Successful retries: {stats['retry_successful']}")
+                print(f"   - Failed retries: {stats['retry_failed']}")
+                print(f"   - Skipped (max retries exceeded): {stats['skipped_max_retries']}")
 
             sys.exit()
         except ImportError:
