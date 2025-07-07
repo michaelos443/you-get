@@ -1636,6 +1636,10 @@ def script_main(download, download_playlist, **kwargs):
         '--failed-downloads', action='store_true',
         help='Show failed downloads that can be resumed'
     )
+    history_grp.add_argument(
+        '--smart-resume', action='store_true',
+        help='Automatically resume all failed/pending downloads'
+    )
 
     # Queue management options
     queue_grp = parser.add_argument_group(
@@ -1832,7 +1836,7 @@ def script_main(download, download_playlist, **kwargs):
         sys.exit()
 
     # Handle download history commands
-    if args.history or args.history_stats or args.export_history or args.failed_downloads:
+    if args.history or args.history_stats or args.export_history or args.failed_downloads or args.smart_resume:
         try:
             from .download_history import get_history_manager
             history_manager = get_history_manager()
@@ -1877,6 +1881,36 @@ def script_main(download, download_playlist, **kwargs):
                         print()
                 else:
                     print("No failed or pending downloads found.")
+
+            if args.smart_resume:
+                failed = history_manager.get_failed_downloads()
+                if failed:
+                    print(f"Smart Resume: Found {len(failed)} failed/pending downloads")
+                    print("-" * 60)
+
+                    resumed_count = 0
+                    for record in failed:
+                        try:
+                            print(f"Resuming: {record.title}")
+                            print(f"  URL: {record.url}")
+
+                            # Use the same download function but with force=True to retry
+                            download_main(
+                                any_download, any_download_playlist,
+                                [record.url], False,
+                                output_dir=os.path.dirname(record.filepath) if record.filepath else '.',
+                                force=True
+                            )
+                            resumed_count += 1
+                            print(f"  ✓ Successfully resumed\n")
+
+                        except Exception as e:
+                            print(f"  ✗ Failed to resume: {str(e)}\n")
+                            continue
+
+                    print(f"Smart Resume completed: {resumed_count}/{len(failed)} downloads resumed successfully")
+                else:
+                    print("Smart Resume: No failed or pending downloads found.")
 
             sys.exit()
         except ImportError:

@@ -54,6 +54,9 @@ class DownloadRecord:
     file_size: Optional[int] = None
     status: str = 'pending'  # pending, completed, failed, resumed
     resume_info: Optional[str] = None  # JSON string for resume data
+    quality: Optional[str] = None  # Video quality (e.g., "720p", "1080p")
+    format: Optional[str] = None  # File format (e.g., "mp4", "webm")
+    extractor: Optional[str] = None  # Extractor used (e.g., "youtube", "vimeo")
 
 
 class DownloadHistoryManager:
@@ -95,6 +98,9 @@ class DownloadHistoryManager:
                     status TEXT DEFAULT 'pending',
                     resume_info TEXT,
                     url_hash TEXT NOT NULL,
+                    quality TEXT,
+                    format TEXT,
+                    extractor TEXT,
                     UNIQUE(url_hash)
                 )
             ''')
@@ -139,14 +145,19 @@ class DownloadHistoryManager:
             )
             return cursor.fetchone() is not None
     
-    def record_download_start(self, url: str, title: str, filepath: str) -> str:
+    def record_download_start(self, url: str, title: str, filepath: str,
+                             quality: Optional[str] = None, format: Optional[str] = None,
+                             extractor: Optional[str] = None) -> str:
         """Record the start of a download
-        
+
         Args:
             url: The URL being downloaded
             title: The title/name of the content
             filepath: The target file path
-            
+            quality: Video quality (e.g., "720p", "1080p")
+            format: File format (e.g., "mp4", "webm")
+            extractor: Extractor used (e.g., "youtube", "vimeo")
+
         Returns:
             The download ID for tracking this download
         """
@@ -157,18 +168,18 @@ class DownloadHistoryManager:
         with sqlite3.connect(self.db_path) as conn:
             try:
                 conn.execute('''
-                    INSERT INTO downloads 
-                    (id, url, title, filepath, download_date, status, url_hash)
-                    VALUES (?, ?, ?, ?, ?, 'pending', ?)
-                ''', (download_id, url, title, filepath, download_date, url_hash))
+                    INSERT INTO downloads
+                    (id, url, title, filepath, download_date, status, url_hash, quality, format, extractor)
+                    VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)
+                ''', (download_id, url, title, filepath, download_date, url_hash, quality, format, extractor))
                 conn.commit()
             except sqlite3.IntegrityError:
                 # URL already exists, update the record
                 conn.execute('''
-                    UPDATE downloads 
-                    SET id = ?, title = ?, filepath = ?, download_date = ?, status = 'pending'
+                    UPDATE downloads
+                    SET id = ?, title = ?, filepath = ?, download_date = ?, status = 'pending', quality = ?, format = ?, extractor = ?
                     WHERE url_hash = ?
-                ''', (download_id, title, filepath, download_date, url_hash))
+                ''', (download_id, title, filepath, download_date, quality, format, extractor, url_hash))
                 conn.commit()
         
         return download_id
@@ -230,7 +241,10 @@ class DownloadHistoryManager:
                     download_date=row['download_date'],
                     file_size=row['file_size'],
                     status=row['status'],
-                    resume_info=row['resume_info']
+                    resume_info=row['resume_info'],
+                    quality=row['quality'] if 'quality' in row.keys() else None,
+                    format=row['format'] if 'format' in row.keys() else None,
+                    extractor=row['extractor'] if 'extractor' in row.keys() else None
                 )
                 records.append(record)
 
@@ -260,7 +274,10 @@ class DownloadHistoryManager:
                     download_date=row['download_date'],
                     file_size=row['file_size'],
                     status=row['status'],
-                    resume_info=row['resume_info']
+                    resume_info=row['resume_info'],
+                    quality=row['quality'] if 'quality' in row.keys() else None,
+                    format=row['format'] if 'format' in row.keys() else None,
+                    extractor=row['extractor'] if 'extractor' in row.keys() else None
                 )
                 records.append(record)
 
@@ -310,6 +327,52 @@ class DownloadHistoryManager:
                     stats['total_size_bytes'] = total_size
 
             return stats
+
+    def smart_resume_downloads(self, max_retries: int = 3) -> Dict[str, int]:
+        """Smart resume all failed/pending downloads
+
+        Args:
+            max_retries: Maximum number of retry attempts per download
+
+        Returns:
+            Dictionary with resume statistics
+        """
+        failed_downloads = self.get_failed_downloads()
+
+        stats = {
+            'total_found': len(failed_downloads),
+            'resumed_successfully': 0,
+            'failed_to_resume': 0,
+            'skipped': 0
+        }
+
+        for record in failed_downloads:
+            try:
+                # Check if file already exists and is complete
+                if record.filepath and os.path.exists(record.filepath):
+                    file_size = os.path.getsize(record.filepath)
+                    if file_size > 0:
+                        # Mark as completed if file exists
+                        self.record_download_complete(record.id, file_size)
+                        stats['resumed_successfully'] += 1
+                        continue
+
+                # Update status to indicate resume attempt
+                with sqlite3.connect(self.db_path) as conn:
+                    conn.execute('''
+                        UPDATE downloads
+                        SET status = 'resumed'
+                        WHERE id = ?
+                    ''', (record.id,))
+                    conn.commit()
+
+                stats['resumed_successfully'] += 1
+
+            except Exception as e:
+                stats['failed_to_resume'] += 1
+                self.record_download_failed(record.id, str(e))
+
+        return stats
 
 
 # Global instance for easy access

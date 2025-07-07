@@ -2855,6 +2855,7 @@ class HyperLogLog:
 
     def _hash(self, item: str) -> int:
         """Hash item to 64-bit integer"""
+        # Get the first 16 characters of the SHA-256 hash
         h = hashlib.sha256(item.encode()).hexdigest()
         return int(h[:16], 16)
 
