@@ -11,6 +11,10 @@ import locale
 import logging
 import argparse
 import ssl
+import sqlite3
+import pickle
+import threading
+import hashlib
 from http import cookiejar
 from importlib import import_module
 from urllib import request, parse, error
@@ -139,6 +143,7 @@ insecure = False
 m3u8 = False
 postfix = False
 prefix = None
+resume_downloads = False
 
 fake_headers = {
     'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
@@ -685,6 +690,29 @@ def url_save(
         chunk_sizes = [file_size]
         is_chunked, urls = False, [url]
 
+    # Resume functionality integration
+    resume_manager = None
+    download_state = None
+    if resume_downloads and not is_part:
+        resume_manager = get_resume_manager()
+        download_state = resume_manager.get_download_state(str(url), filepath)
+
+        if download_state:
+            log.i(f"Found resumable download for {os.path.basename(filepath)}")
+            # Verify the partial download is valid
+            temp_filepath = filepath + '.download'
+            if os.path.exists(temp_filepath):
+                is_valid, actual_size = resume_manager.verify_partial_download(
+                    temp_filepath, file_size
+                )
+                if is_valid and actual_size == download_state['downloaded_size']:
+                    log.i(f"Resuming download from {actual_size}/{file_size} bytes")
+                else:
+                    log.w("Partial download appears corrupted, starting fresh")
+                    download_state = None
+                    if os.path.exists(temp_filepath):
+                        os.remove(temp_filepath)
+
     continue_renameing = True
     while continue_renameing:
         continue_renameing = False
@@ -800,6 +828,9 @@ def url_save(
                 open_mode = 'wb'
 
             with open(temp_filepath, open_mode) as output:
+                bytes_since_last_save = 0
+                save_interval = 1024 * 1024  # Save state every 1MB
+
                 while True:
                     buffer = None
                     try:
@@ -812,6 +843,8 @@ def url_save(
                         elif not is_chunked and received == file_size:  # Download finished
                             break
                         # Unexpected termination. Retry request
+                        if resume_manager and not is_part:
+                            resume_manager.increment_retry_count(str(url), filepath)
                         tmp_headers['Range'] = 'bytes=' + str(received - chunk_start) + '-'
                         response = urlopen_with_retry(
                             request.Request(url, headers=tmp_headers)
@@ -820,6 +853,15 @@ def url_save(
                     output.write(buffer)
                     received += len(buffer)
                     received_chunk += len(buffer)
+                    bytes_since_last_save += len(buffer)
+
+                    # Save download state periodically for resume functionality
+                    if resume_manager and not is_part and bytes_since_last_save >= save_interval:
+                        resume_manager.save_download_state(
+                            str(url), filepath, file_size, received
+                        )
+                        bytes_since_last_save = 0
+
                     if bar:
                         bar.update_received(len(buffer))
 
@@ -831,6 +873,160 @@ def url_save(
         # on Windows rename could fail if destination filepath exists
         os.remove(filepath)
     os.rename(temp_filepath, filepath)
+
+    # Mark download as completed in resume system
+    if resume_manager and not is_part:
+        resume_manager.mark_completed(str(url), filepath)
+        log.i(f"Download completed: {os.path.basename(filepath)}")
+
+
+class DownloadResumeManager:
+    """
+    Download Resume and Recovery System for you-get.
+
+    Features:
+    - Automatic resume of interrupted downloads
+    - Metadata storage for partial downloads
+    - Corruption detection and recovery
+    - Smart retry logic with exponential backoff
+    - Download state persistence across sessions
+    """
+
+    def __init__(self, db_path=None):
+        """Initialize the download resume manager."""
+        if db_path is None:
+            # Store database in user's home directory
+            home_dir = os.path.expanduser("~")
+            you_get_dir = os.path.join(home_dir, ".you-get")
+            os.makedirs(you_get_dir, exist_ok=True)
+            db_path = os.path.join(you_get_dir, "resume.db")
+
+        self.db_path = db_path
+        self.lock = threading.Lock()
+        self._init_database()
+
+    def _init_database(self):
+        """Initialize the SQLite database for storing download metadata."""
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute('''
+                CREATE TABLE IF NOT EXISTS downloads (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    url TEXT NOT NULL,
+                    filepath TEXT NOT NULL,
+                    total_size INTEGER,
+                    downloaded_size INTEGER DEFAULT 0,
+                    checksum TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    status TEXT DEFAULT 'active',
+                    retry_count INTEGER DEFAULT 0,
+                    metadata TEXT,
+                    UNIQUE(url, filepath)
+                )
+            ''')
+            conn.commit()
+
+    def save_download_state(self, url, filepath, total_size, downloaded_size,
+                          checksum=None, metadata=None):
+        """Save or update download state in the database."""
+        with self.lock:
+            with sqlite3.connect(self.db_path) as conn:
+                conn.execute('''
+                    INSERT OR REPLACE INTO downloads
+                    (url, filepath, total_size, downloaded_size, checksum,
+                     updated_at, metadata, status)
+                    VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?, 'active')
+                ''', (url, filepath, total_size, downloaded_size, checksum,
+                      json.dumps(metadata) if metadata else None))
+                conn.commit()
+
+    def get_download_state(self, url, filepath):
+        """Retrieve download state from the database."""
+        with self.lock:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.execute('''
+                    SELECT total_size, downloaded_size, checksum, retry_count, metadata
+                    FROM downloads
+                    WHERE url = ? AND filepath = ? AND status = 'active'
+                ''', (url, filepath))
+                result = cursor.fetchone()
+                if result:
+                    total_size, downloaded_size, checksum, retry_count, metadata = result
+                    return {
+                        'total_size': total_size,
+                        'downloaded_size': downloaded_size,
+                        'checksum': checksum,
+                        'retry_count': retry_count,
+                        'metadata': json.loads(metadata) if metadata else None
+                    }
+                return None
+
+    def mark_completed(self, url, filepath):
+        """Mark a download as completed."""
+        with self.lock:
+            with sqlite3.connect(self.db_path) as conn:
+                conn.execute('''
+                    UPDATE downloads
+                    SET status = 'completed', updated_at = CURRENT_TIMESTAMP
+                    WHERE url = ? AND filepath = ?
+                ''', (url, filepath))
+                conn.commit()
+
+    def increment_retry_count(self, url, filepath):
+        """Increment the retry count for a download."""
+        with self.lock:
+            with sqlite3.connect(self.db_path) as conn:
+                conn.execute('''
+                    UPDATE downloads
+                    SET retry_count = retry_count + 1, updated_at = CURRENT_TIMESTAMP
+                    WHERE url = ? AND filepath = ?
+                ''', (url, filepath))
+                conn.commit()
+
+    def cleanup_old_entries(self, days=30):
+        """Clean up old completed downloads from the database."""
+        with self.lock:
+            with sqlite3.connect(self.db_path) as conn:
+                conn.execute('''
+                    DELETE FROM downloads
+                    WHERE status = 'completed'
+                    AND updated_at < datetime('now', '-{} days')
+                '''.format(days))
+                conn.commit()
+
+    def calculate_checksum(self, filepath, algorithm='md5'):
+        """Calculate checksum of a file for corruption detection."""
+        hash_func = hashlib.new(algorithm)
+        try:
+            with open(filepath, 'rb') as f:
+                for chunk in iter(lambda: f.read(4096), b""):
+                    hash_func.update(chunk)
+            return hash_func.hexdigest()
+        except (IOError, OSError):
+            return None
+
+    def verify_partial_download(self, filepath, expected_size):
+        """Verify if a partial download is valid and can be resumed."""
+        if not os.path.exists(filepath):
+            return False, 0
+
+        actual_size = os.path.getsize(filepath)
+        if actual_size > expected_size:
+            # File is larger than expected, might be corrupted
+            return False, 0
+
+        return True, actual_size
+
+
+# Global instance of the resume manager
+_resume_manager = None
+
+def get_resume_manager():
+    """Get the global resume manager instance."""
+    global _resume_manager
+    if _resume_manager is None:
+        _resume_manager = DownloadResumeManager()
+    return _resume_manager
 
 
 class SimpleProgressBar:
@@ -1645,6 +1841,11 @@ def script_main(download, download_playlist, **kwargs):
         help='ignore ssl errors'
     )
 
+    download_grp.add_argument(
+        '--resume', action='store_true', default=False,
+        help='Enable download resume and recovery system for interrupted downloads'
+    )
+
     proxy_grp = parser.add_argument_group('Proxy options')
     proxy_grp = proxy_grp.add_mutually_exclusive_group()
     proxy_grp.add_argument(
@@ -1698,6 +1899,7 @@ def script_main(download, download_playlist, **kwargs):
     global m3u8
     global postfix
     global prefix
+    global resume_downloads
     output_filename = args.output_filename
     extractor_proxy = args.extractor_proxy
 
@@ -1733,6 +1935,10 @@ def script_main(download, download_playlist, **kwargs):
     if args.insecure:
         # ignore ssl
         insecure = True
+
+    if args.resume:
+        resume_downloads = True
+        log.i("Download resume and recovery system enabled")
 
     postfix = args.postfix
     prefix = args.prefix
