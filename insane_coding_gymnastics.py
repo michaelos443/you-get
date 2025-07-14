@@ -1657,6 +1657,7 @@ class Graph:
         finish_order = []
 
         def dfs1(v):
+            # Visit neighbors
             visited.add(v)
             for neighbor, _ in self.adjacency_list[v]:
                 if neighbor not in visited:

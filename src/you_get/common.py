@@ -736,15 +736,42 @@ def url_save(
     temp_filepath = filepath + '.download' if file_size != float('inf') \
         else filepath
     received = 0
-    if not force:
-        open_mode = 'ab'
 
-        if os.path.exists(temp_filepath):
-            received += os.path.getsize(temp_filepath)
+    # Smart resume logic
+    try:
+        from .smart_resume import SmartResumeManager
+        resume_manager = SmartResumeManager()
+
+        # Save metadata for this download
+        main_url = url if not is_chunked else urls[0]
+        resume_manager.save_download_metadata(main_url, filepath, file_size)
+
+        resume_info = resume_manager.get_resume_info(main_url, filepath, file_size)
+
+        if resume_info and resume_info['can_resume']:
+            received = resume_info['bytes_downloaded']
+            open_mode = 'ab'
             if bar:
-                bar.update_received(os.path.getsize(temp_filepath))
-    else:
-        open_mode = 'wb'
+                bar.update_received(received)
+            log.i(f'Resuming download from {received} bytes ({received/file_size*100:.1f}%)')
+        elif not force:
+            open_mode = 'ab'
+            if os.path.exists(temp_filepath):
+                received += os.path.getsize(temp_filepath)
+                if bar:
+                    bar.update_received(os.path.getsize(temp_filepath))
+        else:
+            open_mode = 'wb'
+    except ImportError:
+        # Fallback to original logic if smart_resume not available
+        if not force:
+            open_mode = 'ab'
+            if os.path.exists(temp_filepath):
+                received += os.path.getsize(temp_filepath)
+                if bar:
+                    bar.update_received(os.path.getsize(temp_filepath))
+        else:
+            open_mode = 'wb'
 
     chunk_start = 0
     chunk_end = 0
@@ -831,6 +858,14 @@ def url_save(
         # on Windows rename could fail if destination filepath exists
         os.remove(filepath)
     os.rename(temp_filepath, filepath)
+
+    # Clean up resume metadata after successful download
+    try:
+        from .smart_resume import get_resume_manager
+        resume_manager = get_resume_manager()
+        resume_manager.cleanup_metadata(url if not is_chunked else urls[0], filepath)
+    except ImportError:
+        pass
 
 
 class SimpleProgressBar:
@@ -1648,6 +1683,10 @@ def script_main(download, download_playlist, **kwargs):
         '--max-retries', type=int, default=3,
         help='Maximum retry attempts for failed downloads (default: 3)'
     )
+    history_grp.add_argument(
+        '--cleanup-resume-data', action='store_true',
+        help='Clean up old resume metadata files (older than 30 days)'
+    )
 
     # Queue management options
     queue_grp = parser.add_argument_group(
@@ -1844,7 +1883,7 @@ def script_main(download, download_playlist, **kwargs):
         sys.exit()
 
     # Handle download history commands
-    if args.history or args.history_stats or args.export_history or args.failed_downloads or args.smart_resume or args.smart_retry:
+    if args.history or args.history_stats or args.export_history or args.failed_downloads or args.smart_resume or args.smart_retry or args.cleanup_resume_data:
         try:
             from .download_history import get_history_manager
             history_manager = get_history_manager()
@@ -1929,6 +1968,15 @@ def script_main(download, download_playlist, **kwargs):
                 print(f"   - Successful retries: {stats['retry_successful']}")
                 print(f"   - Failed retries: {stats['retry_failed']}")
                 print(f"   - Skipped (max retries exceeded): {stats['skipped_max_retries']}")
+
+            if args.cleanup_resume_data:
+                try:
+                    from .smart_resume import get_resume_manager
+                    resume_manager = get_resume_manager()
+                    resume_manager.cleanup_old_metadata()
+                    print("✅ Cleaned up old resume metadata files")
+                except ImportError:
+                    log.e("Smart resume feature not available")
 
             sys.exit()
         except ImportError:
