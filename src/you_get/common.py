@@ -1055,6 +1055,54 @@ def download_urls(
         launch_player(player, urls)
         return
 
+    # Content categorization integration
+    organized_output_dir = output_dir
+    organized_title = title
+
+    # Check if auto-organization is enabled
+    args = kwargs.get('args')
+    if args and hasattr(args, 'auto_organize') and args.auto_organize:
+        try:
+            from .content_categorizer import get_categorizer, CategoryConfig
+
+            # Load custom config if provided
+            config = CategoryConfig(base_output_dir=output_dir)
+            if args and hasattr(args, 'categorize_config') and args.categorize_config:
+                # Load config from file (simplified for now)
+                config.base_output_dir = output_dir
+
+            categorizer = get_categorizer(config)
+
+            # Get source URL for categorization
+            source_url = kwargs.get('source_url', urls[0] if urls else '')
+
+            # Analyze content
+            metadata = {
+                'container': ext,
+                'size': total_size,
+                'urls_count': len(urls)
+            }
+
+            category_info = categorizer.analyze_content(source_url, title, metadata)
+
+            # Update output directory and filename
+            organized_output_dir = category_info.suggested_folder
+            organized_title = category_info.suggested_filename or title
+
+            # Create directory if it doesn't exist
+            os.makedirs(organized_output_dir, exist_ok=True)
+
+            log.i(f"📁 Categorized as: {category_info.category.value.title()}")
+            if category_info.subcategory:
+                log.i(f"📂 Subcategory: {category_info.subcategory}")
+            log.i(f"📍 Organizing to: {organized_output_dir}")
+
+        except ImportError:
+            log.w("Content categorization feature not available")
+        except Exception as e:
+            log.w(f"Content categorization failed: {e}")
+            # Fall back to original behavior
+
     # Initialize download history manager
     download_id = None
     try:
@@ -1079,13 +1127,13 @@ def download_urls(
             traceback.print_exc(file=sys.stdout)
             pass
 
-    title = tr(get_filename(title))
+    title = tr(get_filename(organized_title))
     if postfix and 'vid' in kwargs:
         title = "%s [%s]" % (title, kwargs['vid'])
     if prefix is not None:
         title = "[%s] %s" % (prefix, title)
-    output_filename = get_output_filename(urls, title, ext, output_dir, merge)
-    output_filepath = os.path.join(output_dir, output_filename)
+    output_filename = get_output_filename(urls, title, ext, organized_output_dir, merge)
+    output_filepath = os.path.join(organized_output_dir, output_filename)
 
     # Record download start in history
     if history_manager and source_url:
@@ -1792,6 +1840,14 @@ def script_main(download, download_playlist, **kwargs):
     download_grp.add_argument(
         '-o', '--output-dir', metavar='DIR', default='.',
         help='Set output directory'
+    )
+    download_grp.add_argument(
+        '--auto-organize', action='store_true',
+        help='Automatically organize downloads by content category'
+    )
+    download_grp.add_argument(
+        '--categorize-config', metavar='CONFIG_FILE',
+        help='Path to content categorization configuration file'
     )
     download_grp.add_argument(
         '-p', '--player', metavar='PLAYER',

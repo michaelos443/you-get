@@ -1659,6 +1659,7 @@ class Graph:
         def dfs1(v):
             # Visit neighbors
             visited.add(v)
+            # Iterate through the neighbors of v
             for neighbor, _ in self.adjacency_list[v]:
                 if neighbor not in visited:
                     dfs1(neighbor)
