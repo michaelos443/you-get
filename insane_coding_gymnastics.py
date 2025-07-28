@@ -1661,6 +1661,7 @@ class Graph:
             visited.add(v)
             # Iterate through the neighbors of v
             for neighbor, _ in self.adjacency_list[v]:
+                # Check if neighbor has been visited
                 if neighbor not in visited:
                     dfs1(neighbor)
             finish_order.append(v)
@@ -1695,7 +1696,61 @@ class Graph:
         return sccs
 
     def max_flow(self, source: Any, sink: Any) -> float:
-        """Ford-Fulkerson algorithm for maximum flow"""
+        """
+        Compute the maximum flow from source to sink using the Ford-Fulkerson algorithm.
+
+        This implementation uses the Edmonds-Karp algorithm (Ford-Fulkerson with BFS)
+        to find augmenting paths, ensuring O(VE²) time complexity where V is the number
+        of vertices and E is the number of edges.
+
+        The algorithm works by:
+        1. Creating a residual graph with the same structure as the original graph
+        2. Repeatedly finding augmenting paths from source to sink using BFS
+        3. For each path found, determining the bottleneck capacity (minimum edge capacity)
+        4. Updating residual capacities along the path and adding reverse edges
+        5. Continuing until no more augmenting paths exist
+
+        Args:
+            source (Any): The source vertex from which flow originates.
+                         Must be a valid vertex in the graph.
+            sink (Any): The sink vertex where flow terminates.
+                       Must be a valid vertex in the graph and different from source.
+
+        Returns:
+            float: The maximum flow value that can be pushed from source to sink.
+                  Returns 0.0 if no path exists between source and sink.
+
+        Raises:
+            KeyError: If source or sink vertices are not present in the graph.
+            ValueError: If source and sink are the same vertex.
+
+        Time Complexity:
+            O(VE²) where V is the number of vertices and E is the number of edges.
+            In practice, often performs much better than the worst-case bound.
+
+        Space Complexity:
+            O(V + E) for the residual graph and auxiliary data structures.
+
+        Example:
+            >>> graph = Graph()
+            >>> graph.add_edge('S', 'A', 10)
+            >>> graph.add_edge('S', 'B', 8)
+            >>> graph.add_edge('A', 'T', 10)
+            >>> graph.add_edge('B', 'T', 10)
+            >>> graph.add_edge('A', 'B', 5)
+            >>> max_flow_value = graph.max_flow('S', 'T')
+            >>> print(max_flow_value)  # Output: 18
+
+        Note:
+            - The graph is assumed to be a flow network with non-negative capacities
+            - Self-loops are ignored in flow computation
+            - Multiple edges between the same pair of vertices are summed
+            - The algorithm modifies internal residual graph but preserves original graph
+
+        References:
+            - Ford, L.R.; Fulkerson, D.R. (1956). "Maximal flow through a network"
+            - Edmonds, J.; Karp, R.M. (1972). "Theoretical improvements in algorithmic efficiency"
+        """
         # Create residual graph
         residual = defaultdict(lambda: defaultdict(float))
 

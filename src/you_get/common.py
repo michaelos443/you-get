@@ -1780,6 +1780,35 @@ def script_main(download, download_playlist, **kwargs):
         '--queue-retry-failed', action='store_true',
         help='Retry all failed items in queue'
     )
+
+    # Download scheduling options
+    scheduler_grp = parser.add_argument_group(
+        'Download scheduling options'
+    )
+    scheduler_grp.add_argument(
+        '--schedule', metavar='TIME',
+        help='Schedule download for specific time (HH:MM format)'
+    )
+    scheduler_grp.add_argument(
+        '--schedule-type', choices=['once', 'daily', 'weekly', 'monthly', 'off_peak', 'bandwidth_optimized'],
+        default='once', help='Type of scheduling rule (default: once)'
+    )
+    scheduler_grp.add_argument(
+        '--scheduler-start', action='store_true',
+        help='Start the download scheduler daemon'
+    )
+    scheduler_grp.add_argument(
+        '--scheduler-stop', action='store_true',
+        help='Stop the download scheduler daemon'
+    )
+    scheduler_grp.add_argument(
+        '--scheduler-list', action='store_true',
+        help='List all scheduled downloads'
+    )
+    scheduler_grp.add_argument(
+        '--scheduler-cancel', metavar='ID',
+        help='Cancel a scheduled download by ID'
+    )
     queue_grp.add_argument(
         '--queue-priority', choices=['low', 'normal', 'high', 'urgent'], default='normal',
         help='Set priority for queued downloads (default: normal)'
@@ -2121,6 +2150,35 @@ def script_main(download, download_playlist, **kwargs):
                 log.i(f"Reset {count} failed items for retry")
                 sys.exit()
 
+            # If --schedule flag is used, schedule URLs instead of downloading immediately
+            if args.schedule and args.URL:
+                from .download_scheduler import get_scheduler, ScheduleType
+                scheduler = get_scheduler()
+
+                schedule_type_map = {
+                    'once': ScheduleType.ONCE,
+                    'daily': ScheduleType.DAILY,
+                    'weekly': ScheduleType.WEEKLY,
+                    'monthly': ScheduleType.MONTHLY,
+                    'off_peak': ScheduleType.OFF_PEAK,
+                    'bandwidth_optimized': ScheduleType.BANDWIDTH_OPTIMIZED
+                }
+                schedule_type = schedule_type_map[args.schedule_type]
+
+                for url in args.URL:
+                    download_id = scheduler.schedule_download(
+                        url=url,
+                        scheduled_time=args.schedule,
+                        schedule_type=schedule_type,
+                        output_dir=args.output_dir,
+                        output_filename=args.output_filename
+                    )
+                    log.i(f"📅 Scheduled: {url} (ID: {download_id[:8]}...)")
+
+                log.i(f"📅 Scheduled {len(args.URL)} download(s)")
+                log.i("Use --scheduler-start to begin processing scheduled downloads")
+                sys.exit()
+
             # If --queue flag is used, add URLs to queue instead of downloading
             if args.queue and args.URL:
                 priority_map = {
@@ -2147,6 +2205,59 @@ def script_main(download, download_playlist, **kwargs):
 
         except ImportError:
             log.e("Download queue feature not available")
+            sys.exit(1)
+
+    # Handle scheduler management commands
+    scheduler_commands = [
+        args.scheduler_start, args.scheduler_stop, args.scheduler_list, args.scheduler_cancel
+    ]
+
+    if any(scheduler_commands):
+        try:
+            from .download_scheduler import get_scheduler, ScheduleType
+            scheduler = get_scheduler()
+
+            if args.scheduler_start:
+                scheduler.start_daemon()
+                log.i("📅 Download scheduler daemon started")
+                log.i("Use Ctrl+C to stop the daemon")
+                try:
+                    while True:
+                        time.sleep(1)
+                except KeyboardInterrupt:
+                    scheduler.stop_daemon()
+                    log.i("📅 Download scheduler daemon stopped")
+                sys.exit()
+
+            elif args.scheduler_stop:
+                scheduler.stop_daemon()
+                log.i("⏹️ Download scheduler daemon stopped")
+                sys.exit()
+
+            elif args.scheduler_list:
+                downloads = scheduler.list_scheduled_downloads()
+                if not downloads:
+                    log.i("No scheduled downloads found")
+                else:
+                    log.i(f"Found {len(downloads)} scheduled downloads:")
+                    for download in downloads:
+                        log.i(f"  ID: {download['id'][:8]}...")
+                        log.i(f"  URL: {download['url']}")
+                        log.i(f"  Status: {download['status']}")
+                        log.i(f"  Next run: {download['next_run']}")
+                        log.i(f"  Schedule: {download['schedule_type']} at {download['scheduled_time']}")
+                        log.i("  " + "-" * 50)
+                sys.exit()
+
+            elif args.scheduler_cancel:
+                if scheduler.cancel_download(args.scheduler_cancel):
+                    log.i(f"✅ Cancelled scheduled download: {args.scheduler_cancel}")
+                else:
+                    log.e(f"❌ Failed to cancel download: {args.scheduler_cancel}")
+                sys.exit()
+
+        except ImportError:
+            log.e("Download scheduler feature not available")
             sys.exit(1)
 
     if args.debug:

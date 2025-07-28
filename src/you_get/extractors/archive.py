@@ -17,5 +17,6 @@ def archive_download(url, output_dir='.', merge=True, info_only=False, **kwargs)
         download_urls([source], title, ext, size, output_dir, merge=merge)
 
 site_info = "Archive.org"
+# Assign the function to the variable
 download = archive_download
 download_playlist = playlist_not_supported('archive')
