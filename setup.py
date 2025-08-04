@@ -1,4 +1,10 @@
 #!/usr/bin/env python3
+"""Setup script for you-get package.
+
+This module configures the installation of you-get, a command-line utility
+for downloading videos and other media from various websites including
+YouTube, Youku, Niconico, and many others.
+"""
 
 PROJ_NAME = 'you-get'
 PACKAGE_NAME = 'you_get'
