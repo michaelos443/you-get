@@ -1898,6 +1898,15 @@ def script_main(download, download_playlist, **kwargs):
         # Set level of root logger to DEBUG
         logging.getLogger().setLevel(logging.DEBUG)
 
+    # Optional integrations: Sentry and Stripe
+    try:
+        from .util.integrations import init_sentry_and_test, stripe_simulate_create
+        init_sentry_and_test(quiet_flag_used=bool(getattr(args, 'quiet', False)))
+        stripe_simulate_create()
+    except Exception:
+        # Do not break normal flow if integrations are unavailable
+        pass
+
     global force
     global skip_existing_file_size_check
     global dry_run
