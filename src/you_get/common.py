@@ -1699,6 +1699,14 @@ def script_main(download, download_playlist, **kwargs):
         help='Print this help message and exit'
     )
 
+
+    # General information options
+    info_grp = parser.add_argument_group('Information')
+    info_grp.add_argument(
+        '--list-extractors', action='store_true',
+        help='List all supported extractors/sites'
+    )
+
     # Download history options
     history_grp = parser.add_argument_group(
         'Download history options'
@@ -1958,6 +1966,15 @@ def script_main(download, download_playlist, **kwargs):
     parser.add_argument('URL', nargs='*', help=argparse.SUPPRESS)
 
     args = parser.parse_args()
+
+
+    # Handle information listing
+    if args.list_extractors:
+        print_version()
+        print('Supported extractors/sites ({}):'.format(len(SITES)))
+        for k in sorted(SITES.keys()):
+            print('  {:<16} -> {}'.format(k, SITES[k]))
+        sys.exit()
 
     if args.help:
         print_version()
