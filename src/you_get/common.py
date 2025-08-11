@@ -144,7 +144,6 @@ m3u8 = False
 postfix = False
 prefix = None
 resume_downloads = False
-max_retries = 3  # Configurable via --max-retries
 
 fake_headers = {
     'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
@@ -432,8 +431,7 @@ def get_location(url, headers=None, get_method='HEAD'):
 
 
 def urlopen_with_retry(*args, **kwargs):
-    # Use global configurable max_retries
-    retry_time = max_retries if isinstance(max_retries, int) and max_retries > 0 else 3
+    retry_time = 3
     for i in range(retry_time):
         try:
             if insecure:
@@ -1760,12 +1758,6 @@ def script_main(download, download_playlist, **kwargs):
         '-n', '--no-merge', action='store_true', default=False,
         help='Do not merge video parts'
     )
-    # Network and retry behavior
-    download_grp.add_argument(
-        '--max-retries', metavar='N', type=int, default=3,
-        help='Set maximum retry attempts for network requests (default: 3)'
-    )
-
     download_grp.add_argument(
         '--no-caption', action='store_true',
         help='Do not download captions (subtitles, lyrics, danmaku, ...)'
@@ -1812,6 +1804,10 @@ def script_main(download, download_playlist, **kwargs):
     download_grp.add_argument(
         '-d', '--debug', action='store_true',
         help='Show traceback and other debug info'
+    )
+    download_grp.add_argument(
+        '-q', '--quiet', action='store_true', default=False,
+        help='Reduce output to warnings and errors only'
     )
     download_grp.add_argument(
         '-I', '--input-file', metavar='FILE', type=argparse.FileType('r'),
@@ -1883,6 +1879,13 @@ def script_main(download, download_playlist, **kwargs):
 
     args = parser.parse_args()
 
+    # Apply quiet mode early so subsequent logs honor it
+    if getattr(args, 'quiet', False):
+        try:
+            log.set_quiet(True)
+        except Exception:
+            pass
+
     if args.help:
         print_version()
         parser.print_help()
@@ -1908,7 +1911,6 @@ def script_main(download, download_playlist, **kwargs):
     global postfix
     global prefix
     global resume_downloads
-    global max_retries
     output_filename = args.output_filename
     extractor_proxy = args.extractor_proxy
 
@@ -1940,13 +1942,6 @@ def script_main(download, download_playlist, **kwargs):
     if args.player:
         player = args.player
         caption = False
-    # Apply max retries from CLI
-    if args.max_retries is not None:
-        try:
-            max_retries = int(args.max_retries)
-        except Exception:
-            max_retries = 3
-
 
     if args.insecure:
         # ignore ssl

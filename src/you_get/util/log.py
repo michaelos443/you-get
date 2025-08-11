@@ -5,6 +5,15 @@ from ..version import script_name
 
 import os, sys
 
+# Global quiet toggle to suppress info/debug logs
+QUIET = False
+
+def set_quiet(val=True):
+    """Enable or disable quiet mode (suppresses info/debug logs)."""
+    global QUIET
+    QUIET = bool(val)
+
+
 TERM = os.getenv('TERM', '')
 IS_ANSI_TERMINAL = TERM in (
     'eterm-color',
@@ -74,12 +83,14 @@ def print_log(text, *colors):
     sys.stderr.write(sprint("{}: {}".format(script_name, text), *colors) + "\n")
 
 def i(message):
-    """Print a normal log message."""
-    print_log(message)
+    """Print a normal log message (suppressed when QUIET)."""
+    if not QUIET:
+        print_log(message)
 
 def d(message):
-    """Print a debug log message."""
-    print_log(message, BLUE)
+    """Print a debug log message (suppressed when QUIET)."""
+    if not QUIET:
+        print_log(message, BLUE)
 
 def w(message):
     """Print a warning log message."""

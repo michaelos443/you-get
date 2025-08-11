@@ -14,10 +14,49 @@ PROJ_METADATA = '%s.json' % PROJ_NAME
 import importlib.util
 import importlib.machinery
 
-def load_source(modname, filename):
+from types import ModuleType
+from typing import Optional, cast
+
+def load_source(modname: str, filename: str) -> ModuleType:
+    """
+    Load and execute a Python source file as a module.
+
+    Parameters
+    ----------
+    modname : str
+        The name to assign to the loaded module.
+    filename : str
+        Absolute or relative path to the source file to load.
+
+    Returns
+    -------
+    ModuleType
+        The loaded and executed module object. The module is not cached in
+        ``sys.modules`` by default (see Notes).
+
+    Notes
+    -----
+    - This function mirrors ``importlib``-based loading, creating a new module
+      object from a module ``spec`` and executing it with the provided loader.
+    - The module is intentionally not inserted into ``sys.modules`` to avoid
+      side-effects. If you need caching, assign it manually:
+
+        ``sys.modules[module.__name__] = module``
+
+    Examples
+    --------
+    >>> m = load_source('my_mod', 'path/to/file.py')
+    >>> hasattr(m, '__file__')
+    True
+    """
     loader = importlib.machinery.SourceFileLoader(modname, filename)
-    spec = importlib.util.spec_from_file_location(modname, filename, loader=loader)
-    module = importlib.util.module_from_spec(spec)
+    spec: Optional[importlib.machinery.ModuleSpec] = importlib.util.spec_from_file_location(
+        modname, filename, loader=loader
+    )
+    if spec is None:
+        raise ImportError(f"Could not create a module spec for {filename}")
+
+    module = importlib.util.module_from_spec(cast(importlib.machinery.ModuleSpec, spec))
     # The module is always executed and not cached in sys.modules.
     # Uncomment the following line to cache the module.
     # sys.modules[module.__name__] = module
