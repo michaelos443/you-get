@@ -6,14 +6,18 @@ from ..common import *
 
 def archive_download(url, output_dir='.', merge=True, info_only=False, **kwargs):
     html = get_html(url)
+    # The title of the video
     title = r1(r'<meta property="og:title" content="([^"]*)"', html)
     source = r1(r'<meta property="og:video" content="([^"]*)"', html)
     mime, ext, size = url_info(source)
 
     print_info(site_info, title, mime, size)
+    # If the user only wants the information
     if not info_only:
+        # Download the video
         download_urls([source], title, ext, size, output_dir, merge=merge)
 
 site_info = "Archive.org"
+# Assign the function to the variable
 download = archive_download
 download_playlist = playlist_not_supported('archive')
