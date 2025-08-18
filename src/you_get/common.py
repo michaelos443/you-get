@@ -1541,6 +1541,17 @@ def script_main(download, download_playlist, **kwargs):
         help='Print this help message and exit'
     )
 
+    # Analytics options
+    analytics_grp = parser.add_argument_group('Analytics options')
+    analytics_grp.add_argument(
+        '--analytics', action='store_true',
+        help='Start analytics dashboard server'
+    )
+    analytics_grp.add_argument(
+        '--analytics-port', metavar='PORT', type=int, default=8080,
+        help='Port for analytics dashboard server (default: 8080)'
+    )
+
     dry_run_grp = parser.add_argument_group(
         'Dry-run options', '(no actual downloading)'
     )
@@ -1640,6 +1651,17 @@ def script_main(download, download_playlist, **kwargs):
         help='Auto rename same name different files'
     )
 
+    # Analytics options
+    analytics_grp = parser.add_argument_group('Analytics options')
+    analytics_grp.add_argument(
+        '--analytics', action='store_true',
+        help='Start analytics dashboard server'
+    )
+    analytics_grp.add_argument(
+        '--analytics-port', metavar='PORT', type=int, default=8080,
+        help='Port for analytics dashboard server (default: 8080)'
+    )
+
     download_grp.add_argument(
         '-k', '--insecure', action='store_true', default=False,
         help='ignore ssl errors'
@@ -1721,6 +1743,25 @@ def script_main(download, download_playlist, **kwargs):
 
     if args.m3u8:
         m3u8 = True
+
+    # Handle analytics commands
+    if args.analytics:
+        try:
+            from .analytics import start_dashboard
+            server = start_dashboard(args.analytics_port)
+            print("Press Ctrl+C to stop the analytics server")
+            try:
+                while True:
+                    time.sleep(1)
+            except KeyboardInterrupt:
+                server.stop()
+                print("\nAnalytics server stopped")
+                sys.exit()
+        except KeyboardInterrupt:
+            sys.exit(1)
+        except ImportError as e:
+            log.e(f"Analytics feature not available: {e}")
+            sys.exit(1)
 
     caption = True
     stream_id = args.format or args.stream or args.itag
