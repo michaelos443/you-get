@@ -1699,14 +1699,6 @@ def script_main(download, download_playlist, **kwargs):
         help='Print this help message and exit'
     )
 
-
-    # General information options
-    info_grp = parser.add_argument_group('Information')
-    info_grp.add_argument(
-        '--list-extractors', action='store_true',
-        help='List all supported extractors/sites'
-    )
-
     # Download history options
     history_grp = parser.add_argument_group(
         'Download history options'
@@ -1890,6 +1882,37 @@ def script_main(download, download_playlist, **kwargs):
         '-p', '--player', metavar='PLAYER',
         help='Stream extracted URL to a PLAYER'
     )
+
+    # Queue management options
+    queue_grp = parser.add_argument_group('Queue management options')
+    queue_grp.add_argument(
+        '--queue', action='store_true',
+        help='Add download to queue instead of downloading immediately'
+    )
+    queue_grp.add_argument(
+        '--queue-priority', choices=['low', 'normal', 'high', 'urgent'],
+        default='normal', help='Priority for queued downloads'
+    )
+    queue_grp.add_argument(
+        '--queue-status', action='store_true',
+        help='Show current queue status'
+    )
+    queue_grp.add_argument(
+        '--queue-start', action='store_true',
+        help='Start processing the download queue'
+    )
+    queue_grp.add_argument(
+        '--queue-stop', action='store_true',
+        help='Stop processing the download queue'
+    )
+    queue_grp.add_argument(
+        '--queue-clear', action='store_true',
+        help='Clear completed downloads from queue'
+    )
+    queue_grp.add_argument(
+        '--queue-list', action='store_true',
+        help='List all items in the queue'
+    )
     download_grp.add_argument(
         '-c', '--cookies', metavar='COOKIES_FILE',
         help='Load cookies.txt or cookies.sqlite'
@@ -1966,15 +1989,6 @@ def script_main(download, download_playlist, **kwargs):
     parser.add_argument('URL', nargs='*', help=argparse.SUPPRESS)
 
     args = parser.parse_args()
-
-
-    # Handle information listing
-    if args.list_extractors:
-        print_version()
-        print('Supported extractors/sites ({}):'.format(len(SITES)))
-        for k in sorted(SITES.keys()):
-            print('  {:<16} -> {}'.format(k, SITES[k]))
-        sys.exit()
 
     if args.help:
         print_version()
@@ -2357,6 +2371,65 @@ def script_main(download, download_playlist, **kwargs):
         sys.exit()
 
     socket.setdefaulttimeout(args.timeout)
+
+# Handle queue management commands
+    if args.queue_status or args.queue_start or args.queue_stop or args.queue_clear or args.queue_list:
+        try:
+            from .queue_manager import get_global_queue
+            queue = get_global_queue()
+
+            if args.queue_status:
+                status = queue.get_queue_status()
+                print(json.dumps(status, indent=2))
+                return
+
+            if args.queue_list:
+                items = queue.list_items()
+                for item in items:
+                    print(f"{item['id']}: {item['url']} ({item['status']}, priority: {item['priority']})")
+                return
+
+            if args.queue_start:
+                queue.start()
+                return
+
+            if args.queue_stop:
+                queue.stop()
+                return
+
+            if args.queue_clear:
+                queue.clear_completed()
+                return
+
+        except ImportError:
+            log.e("Queue management not available")
+            sys.exit(1)
+
+    # Handle queued downloads vs immediate downloads
+    if args.queue and URLs:
+        try:
+            from .queue_manager import get_global_queue, Priority
+            queue = get_global_queue()
+
+            # Map string priorities to enum
+            priority_map = {
+                'low': Priority.LOW,
+                'normal': Priority.NORMAL,
+                'high': Priority.HIGH,
+                'urgent': Priority.URGENT
+            }
+            priority = priority_map.get(args.queue_priority, Priority.NORMAL)
+
+            # Add all URLs to queue
+            for url in URLs:
+                queue.add_item(url, priority=priority, output_dir=args.output_dir)
+                log.i(f"Added {url} to download queue")
+
+            return
+
+        except ImportError:
+            log.e("Queue management not available")
+            sys.exit(1)
 
     try:
         extra = {'args': args}

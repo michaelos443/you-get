@@ -9,6 +9,7 @@ import importlib.util
 import importlib.machinery
 
 def load_source(modname, filename):
+    """Load a Python source file directly, without importing it."""
     loader = importlib.machinery.SourceFileLoader(modname, filename)
     spec = importlib.util.spec_from_file_location(modname, filename, loader=loader)
     module = importlib.util.module_from_spec(spec)
