@@ -736,15 +736,42 @@ def url_save(
     temp_filepath = filepath + '.download' if file_size != float('inf') \
         else filepath
     received = 0
-    if not force:
-        open_mode = 'ab'
 
-        if os.path.exists(temp_filepath):
-            received += os.path.getsize(temp_filepath)
+    # Smart resume logic
+    try:
+        from .smart_resume import SmartResumeManager
+        resume_manager = SmartResumeManager()
+
+        # Save metadata for this download
+        main_url = url if not is_chunked else urls[0]
+        resume_manager.save_download_metadata(main_url, filepath, file_size)
+
+        resume_info = resume_manager.get_resume_info(main_url, filepath, file_size)
+
+        if resume_info and resume_info['can_resume']:
+            received = resume_info['bytes_downloaded']
+            open_mode = 'ab'
             if bar:
-                bar.update_received(os.path.getsize(temp_filepath))
-    else:
-        open_mode = 'wb'
+                bar.update_received(received)
+            log.i(f'Resuming download from {received} bytes ({received/file_size*100:.1f}%)')
+        elif not force:
+            open_mode = 'ab'
+            if os.path.exists(temp_filepath):
+                received += os.path.getsize(temp_filepath)
+                if bar:
+                    bar.update_received(os.path.getsize(temp_filepath))
+        else:
+            open_mode = 'wb'
+    except ImportError:
+        # Fallback to original logic if smart_resume not available
+        if not force:
+            open_mode = 'ab'
+            if os.path.exists(temp_filepath):
+                received += os.path.getsize(temp_filepath)
+                if bar:
+                    bar.update_received(os.path.getsize(temp_filepath))
+        else:
+            open_mode = 'wb'
 
     chunk_start = 0
     chunk_end = 0
@@ -832,6 +859,14 @@ def url_save(
         os.remove(filepath)
     os.rename(temp_filepath, filepath)
 
+    # Clean up resume metadata after successful download
+    try:
+        from .smart_resume import get_resume_manager
+        resume_manager = get_resume_manager()
+        resume_manager.cleanup_metadata(url if not is_chunked else urls[0], filepath)
+    except ImportError:
+        pass
+
 
 class SimpleProgressBar:
     term_size = term.get_terminal_size()[1]
@@ -891,6 +926,21 @@ class SimpleProgressBar:
         else:
             self.speed = '{:4.0f}  B/s'.format(bytes_ps)
         self.last_updated = time.time()
+
+        # Emit progress update event
+        try:
+            from .middleware import emit_event, DownloadEvent
+            progress_percent = (self.received / self.total_size * 100) if self.total_size > 0 else 0
+            emit_event(
+                DownloadEvent.PROGRESS_UPDATE,
+                total_size=self.total_size,
+                received=self.received,
+                progress_percent=progress_percent,
+                speed=self.speed
+            )
+        except ImportError:
+            pass  # Middleware not available, continue normally
+
         self.update()
 
     def update_piece(self, n):
@@ -987,6 +1037,20 @@ def download_urls(
     faker=False, headers={}, **kwargs
 ):
     assert urls
+
+    # Track download start for analytics
+    try:
+        from .middleware import trigger_event, DownloadEvent
+        trigger_event(DownloadEvent.DOWNLOAD_START, {
+            'url': urls[0] if urls else '',
+            'title': title,
+            'ext': ext,
+            'size': total_size,
+            'site': kwargs.get('site_info', ''),
+        })
+    except ImportError:
+        pass
+
     if json_output:
         json_output_.download_urls(
             urls=urls, title=title, ext=ext, total_size=total_size,
@@ -1005,6 +1069,70 @@ def download_urls(
         launch_player(player, urls)
         return
 
+    # Content categorization integration
+    organized_output_dir = output_dir
+    organized_title = title
+
+    # Check if auto-organization is enabled
+    args = kwargs.get('args')
+    if args and hasattr(args, 'auto_organize') and args.auto_organize:
+        try:
+            from .content_categorizer import get_categorizer, CategoryConfig
+
+            # Load custom config if provided
+            config = CategoryConfig(base_output_dir=output_dir)
+            if args and hasattr(args, 'categorize_config') and args.categorize_config:
+                # Load config from file (simplified for now)
+                config.base_output_dir = output_dir
+
+            categorizer = get_categorizer(config)
+
+            # Get source URL for categorization
+            source_url = kwargs.get('source_url', urls[0] if urls else '')
+
+            # Analyze content
+            metadata = {
+                'container': ext,
+                'size': total_size,
+                'urls_count': len(urls)
+            }
+
+            category_info = categorizer.analyze_content(source_url, title, metadata)
+
+            # Update output directory and filename
+            organized_output_dir = category_info.suggested_folder
+            organized_title = category_info.suggested_filename or title
+
+            # Create directory if it doesn't exist
+            os.makedirs(organized_output_dir, exist_ok=True)
+
+            log.i(f"📁 Categorized as: {category_info.category.value.title()}")
+            if category_info.subcategory:
+                log.i(f"📂 Subcategory: {category_info.subcategory}")
+            log.i(f"📍 Organizing to: {organized_output_dir}")
+
+        except ImportError:
+            log.w("Content categorization feature not available")
+        except Exception as e:
+            log.w(f"Content categorization failed: {e}")
+            # Fall back to original behavior
+
+    # Initialize download history manager
+    download_id = None
+    try:
+        from .download_history import get_history_manager
+        history_manager = get_history_manager()
+
+        # Check if this URL was already downloaded
+        source_url = urls[0] if urls else None
+        if source_url and history_manager.is_downloaded(source_url):
+            log.w(f'URL already downloaded previously: {source_url}')
+            if not force:
+                print('Use --force to download again.')
+                return
+    except ImportError:
+        history_manager = None
+
     if not total_size:
         try:
             total_size = urls_size(urls, faker=faker, headers=headers)
@@ -1013,13 +1141,34 @@ def download_urls(
             traceback.print_exc(file=sys.stdout)
             pass
 
-    title = tr(get_filename(title))
+    title = tr(get_filename(organized_title))
     if postfix and 'vid' in kwargs:
         title = "%s [%s]" % (title, kwargs['vid'])
     if prefix is not None:
         title = "[%s] %s" % (prefix, title)
-    output_filename = get_output_filename(urls, title, ext, output_dir, merge)
-    output_filepath = os.path.join(output_dir, output_filename)
+    output_filename = get_output_filename(urls, title, ext, organized_output_dir, merge)
+    output_filepath = os.path.join(organized_output_dir, output_filename)
+
+    # Record download start in history
+    if history_manager and source_url:
+        download_id = history_manager.record_download_start(
+            url=source_url,
+            title=title,
+            filepath=output_filepath
+        )
+
+    # Emit download start event
+    try:
+        from .middleware import emit_event, DownloadEvent
+        emit_event(
+            DownloadEvent.DOWNLOAD_START,
+            url=urls[0] if urls else None,
+            title=title,
+            filepath=output_filepath,
+            total_size=total_size
+        )
+    except ImportError:
+        pass  # Middleware not available, continue normally
 
     if total_size:
         if not force and os.path.exists(output_filepath) and not auto_rename\
@@ -1138,6 +1287,31 @@ def download_urls(
 
         else:
             print("Can't merge %s files" % ext)
+
+    # Record download completion in history
+    if history_manager and download_id:
+        try:
+            # Get actual file size
+            actual_size = os.path.getsize(output_filepath) if os.path.exists(output_filepath) else total_size
+            history_manager.record_download_complete(download_id, actual_size)
+        except Exception as e:
+            # If we can't record completion, record as failed
+            history_manager.record_download_failed(download_id, str(e))
+
+    # Track download completion for analytics
+    try:
+        from .middleware import trigger_event, DownloadEvent
+        trigger_event(DownloadEvent.DOWNLOAD_COMPLETE, {
+            'url': urls[0] if urls else '',
+            'title': title,
+            'ext': ext,
+            'size': total_size,
+            'filepath': output_filepath,
+            'site': kwargs.get('site_info', ''),
+            'success': True
+        })
+    except ImportError:
+        pass  # Middleware not available, continue normally
 
     print()
 
@@ -1541,15 +1715,136 @@ def script_main(download, download_playlist, **kwargs):
         help='Print this help message and exit'
     )
 
+    # Download history options
+    history_grp = parser.add_argument_group(
+        'Download history options'
+    )
+    history_grp.add_argument(
+        '--history', action='store_true',
+        help='Show download history'
+    )
+    history_grp.add_argument(
+        '--history-stats', action='store_true',
+        help='Show download statistics'
+    )
+    history_grp.add_argument(
+        '--export-history', metavar='FILE',
+        help='Export download history to JSON file'
+    )
+    history_grp.add_argument(
+        '--failed-downloads', action='store_true',
+        help='Show failed downloads that can be resumed'
+    )
+    history_grp.add_argument(
+        '--smart-resume', action='store_true',
+        help='Automatically resume all failed/pending downloads'
+    )
+    history_grp.add_argument(
+        '--smart-retry', action='store_true',
+        help='Intelligently retry failed downloads with exponential backoff'
+    )
+    history_grp.add_argument(
+        '--max-retries', type=int, default=3,
+        help='Maximum retry attempts for failed downloads (default: 3)'
+    )
+    history_grp.add_argument(
+        '--cleanup-resume-data', action='store_true',
+        help='Clean up old resume metadata files (older than 30 days)'
+    )
+
+    # Queue management options
+    queue_grp = parser.add_argument_group(
+        'Download queue options'
+    )
+    queue_grp.add_argument(
+        '--queue', action='store_true',
+        help='Add URL(s) to download queue instead of downloading immediately'
+    )
+    queue_grp.add_argument(
+        '--queue-start', action='store_true',
+        help='Start processing the download queue'
+    )
+    queue_grp.add_argument(
+        '--queue-stop', action='store_true',
+        help='Stop processing the download queue'
+    )
+    queue_grp.add_argument(
+        '--queue-pause', action='store_true',
+        help='Pause the download queue'
+    )
+    queue_grp.add_argument(
+        '--queue-resume', action='store_true',
+        help='Resume the download queue'
+    )
+    queue_grp.add_argument(
+        '--queue-status', action='store_true',
+        help='Show download queue status'
+    )
+    queue_grp.add_argument(
+        '--queue-list', action='store_true',
+        help='List items in download queue'
+    )
+    queue_grp.add_argument(
+        '--queue-clear-completed', action='store_true',
+        help='Remove completed items from queue'
+    )
+    queue_grp.add_argument(
+        '--queue-clear-failed', action='store_true',
+        help='Remove failed items from queue'
+    )
+    queue_grp.add_argument(
+        '--queue-retry-failed', action='store_true',
+        help='Retry all failed items in queue'
+    )
+
+    # Download scheduling options
+    scheduler_grp = parser.add_argument_group(
+        'Download scheduling options'
+    )
+    scheduler_grp.add_argument(
+        '--schedule', metavar='TIME',
+        help='Schedule download for specific time (HH:MM format)'
+    )
+    scheduler_grp.add_argument(
+        '--schedule-type', choices=['once', 'daily', 'weekly', 'monthly', 'off_peak', 'bandwidth_optimized'],
+        default='once', help='Type of scheduling rule (default: once)'
+    )
+    scheduler_grp.add_argument(
+        '--scheduler-start', action='store_true',
+        help='Start the download scheduler daemon'
+    )
+    scheduler_grp.add_argument(
+        '--scheduler-stop', action='store_true',
+        help='Stop the download scheduler daemon'
+    )
+    scheduler_grp.add_argument(
+        '--scheduler-list', action='store_true',
+        help='List all scheduled downloads'
+    )
+    scheduler_grp.add_argument(
+        '--scheduler-cancel', metavar='ID',
+        help='Cancel a scheduled download by ID'
+    )
+
     # Analytics options
-    analytics_grp = parser.add_argument_group('Analytics options')
-    analytics_grp.add_argument(
-        '--analytics', action='store_true',
-        help='Start analytics dashboard server'
+    analytics_grp = parser.add_argument_group(
+        'Analytics options'
     )
     analytics_grp.add_argument(
-        '--analytics-port', metavar='PORT', type=int, default=8080,
-        help='Port for analytics dashboard server (default: 8080)'
+        '--analytics-dashboard', action='store_true',
+        help='Start the analytics dashboard web server'
+    )
+    analytics_grp.add_argument(
+        '--analytics-port', type=int, default=8080,
+        help='Port for analytics dashboard (default: 8080)'
+    )
+    queue_grp.add_argument(
+        '--queue-priority', choices=['low', 'normal', 'high', 'urgent'], default='normal',
+        help='Set priority for queued downloads (default: normal)'
+    )
+    queue_grp.add_argument(
+        '--queue-max-concurrent', type=int, default=3,
+        help='Maximum concurrent downloads (default: 3)'
     )
 
     dry_run_grp = parser.add_argument_group(
@@ -1605,6 +1900,14 @@ def script_main(download, download_playlist, **kwargs):
         help='Set output directory'
     )
     download_grp.add_argument(
+        '--auto-organize', action='store_true',
+        help='Automatically organize downloads by content category'
+    )
+    download_grp.add_argument(
+        '--categorize-config', metavar='CONFIG_FILE',
+        help='Path to content categorization configuration file'
+    )
+    download_grp.add_argument(
         '-p', '--player', metavar='PLAYER',
         help='Stream extracted URL to a PLAYER'
     )
@@ -1651,17 +1954,6 @@ def script_main(download, download_playlist, **kwargs):
         help='Auto rename same name different files'
     )
 
-    # Analytics options
-    analytics_grp = parser.add_argument_group('Analytics options')
-    analytics_grp.add_argument(
-        '--analytics', action='store_true',
-        help='Start analytics dashboard server'
-    )
-    analytics_grp.add_argument(
-        '--analytics-port', metavar='PORT', type=int, default=8080,
-        help='Port for analytics dashboard server (default: 8080)'
-    )
-
     download_grp.add_argument(
         '-k', '--insecure', action='store_true', default=False,
         help='ignore ssl errors'
@@ -1704,6 +1996,318 @@ def script_main(download, download_playlist, **kwargs):
         print_version()
         sys.exit()
 
+    # Handle download history commands
+    if args.history or args.history_stats or args.export_history or args.failed_downloads or args.smart_resume or args.smart_retry or args.cleanup_resume_data:
+        try:
+            from .download_history import get_history_manager
+            history_manager = get_history_manager()
+
+            if args.history:
+                records = history_manager.get_download_history()
+                print("Download History:")
+                print("-" * 80)
+                for record in records:
+                    status_symbol = "✓" if record.status == "completed" else "✗" if record.status == "failed" else "⏳"
+                    size_str = f" ({record.file_size // 1024 // 1024} MB)" if record.file_size else ""
+                    print(f"{status_symbol} {record.download_date[:19]} | {record.title}{size_str}")
+                    print(f"   {record.url}")
+                    print(f"   → {record.filepath}")
+                    print()
+
+            if args.history_stats:
+                stats = history_manager.get_statistics()
+                print("Download Statistics:")
+                print("-" * 40)
+                print(f"Total downloads: {stats['total_downloads']}")
+                print(f"Completed: {stats.get('completed', 0)}")
+                print(f"Failed: {stats.get('failed', 0)}")
+                print(f"Pending: {stats.get('pending', 0)}")
+                if stats['total_size_bytes'] > 0:
+                    size_mb = stats['total_size_bytes'] / 1024 / 1024
+                    print(f"Total downloaded: {size_mb:.1f} MB")
+
+            if args.export_history:
+                history_manager.export_history(args.export_history)
+                print(f"History exported to: {args.export_history}")
+
+            if args.failed_downloads:
+                failed = history_manager.get_failed_downloads()
+                if failed:
+                    print("Failed/Pending Downloads:")
+                    print("-" * 80)
+                    for record in failed:
+                        print(f"[{record.status.upper()}] {record.title}")
+                        print(f"   {record.url}")
+                        print(f"   Date: {record.download_date[:19]}")
+                        print()
+                else:
+                    print("No failed or pending downloads found.")
+
+            if args.smart_resume:
+                failed = history_manager.get_failed_downloads()
+                if failed:
+                    print(f"Smart Resume: Found {len(failed)} failed/pending downloads")
+                    print("-" * 60)
+
+                    resumed_count = 0
+                    for record in failed:
+                        try:
+                            print(f"Resuming: {record.title}")
+                            print(f"  URL: {record.url}")
+
+                            # Use the same download function but with force=True to retry
+                            download_main(
+                                any_download, any_download_playlist,
+                                [record.url], False,
+                                output_dir=os.path.dirname(record.filepath) if record.filepath else '.',
+                                force=True
+                            )
+                            resumed_count += 1
+                            print(f"  ✓ Successfully resumed\n")
+
+                        except Exception as e:
+                            print(f"  ✗ Failed to resume: {str(e)}\n")
+                            continue
+
+                    print(f"Smart Resume completed: {resumed_count}/{len(failed)} downloads resumed successfully")
+                else:
+                    print("Smart Resume: No failed or pending downloads found.")
+
+            if args.smart_retry:
+                print("🔄 Starting smart retry for failed downloads...")
+                stats = history_manager.smart_retry_failed_downloads(max_retries=args.max_retries)
+                print(f"✅ Smart retry completed:")
+                print(f"   - Total failed downloads: {stats['total_failed']}")
+                print(f"   - Retry attempts made: {stats['retry_attempted']}")
+                print(f"   - Successful retries: {stats['retry_successful']}")
+                print(f"   - Failed retries: {stats['retry_failed']}")
+                print(f"   - Skipped (max retries exceeded): {stats['skipped_max_retries']}")
+
+            if args.cleanup_resume_data:
+                try:
+                    from .smart_resume import get_resume_manager
+                    resume_manager = get_resume_manager()
+                    resume_manager.cleanup_old_metadata()
+                    print("✅ Cleaned up old resume metadata files")
+                except ImportError:
+                    log.e("Smart resume feature not available")
+
+            sys.exit()
+        except ImportError:
+            log.e("Download history feature not available")
+            sys.exit(1)
+
+    # Handle queue management commands
+    queue_commands = [
+        args.queue_start, args.queue_stop, args.queue_pause, args.queue_resume,
+        args.queue_status, args.queue_list, args.queue_clear_completed,
+        args.queue_clear_failed, args.queue_retry_failed
+    ]
+
+    if any(queue_commands) or args.queue:
+        try:
+            from .queue_manager import get_global_queue, Priority
+            queue = get_global_queue()
+            queue.max_concurrent = args.queue_max_concurrent
+
+            if args.queue_start:
+                queue.start()
+                log.i("Download queue started")
+                sys.exit()
+
+            if args.queue_stop:
+                queue.stop()
+                log.i("Download queue stopped")
+                sys.exit()
+
+            if args.queue_pause:
+                queue.pause()
+                log.i("Download queue paused")
+                sys.exit()
+
+            if args.queue_resume:
+                queue.resume()
+                log.i("Download queue resumed")
+                sys.exit()
+
+            if args.queue_status:
+                status = queue.get_queue_status()
+                print("Download Queue Status:")
+                print("-" * 40)
+                print(f"Status: {status['queue_status'].upper()}")
+                print(f"Active downloads: {status['active_downloads']}/{status['max_concurrent']}")
+                print(f"Total items: {status['total_items']}")
+                if status['item_counts']:
+                    print("Item breakdown:")
+                    for status_name, count in status['item_counts'].items():
+                        print(f"  {status_name}: {count}")
+                sys.exit()
+
+            if args.queue_list:
+                items = queue.list_items()
+                if items:
+                    print("Download Queue Items:")
+                    print("-" * 80)
+                    for item in items:
+                        status_symbol = {
+                            'pending': '⏳', 'downloading': '⬇️', 'completed': '✅',
+                            'failed': '❌', 'paused': '⏸️', 'scheduled': '⏰'
+                        }.get(item['status'], '?')
+                        priority_str = f"[{item['priority'].name}]" if hasattr(item['priority'], 'name') else f"[{item['priority']}]"
+                        print(f"{status_symbol} {priority_str} {item['url']}")
+                        if item['scheduled_time']:
+                            print(f"   Scheduled: {item['scheduled_time'][:19]}")
+                        if item['error_message']:
+                            print(f"   Error: {item['error_message']}")
+                        print()
+                else:
+                    print("Queue is empty")
+                sys.exit()
+
+            if args.queue_clear_completed:
+                count = queue.clear_completed()
+                log.i(f"Cleared {count} completed items")
+                sys.exit()
+
+            if args.queue_clear_failed:
+                count = queue.clear_failed()
+                log.i(f"Cleared {count} failed items")
+                sys.exit()
+
+            if args.queue_retry_failed:
+                count = queue.retry_failed()
+                log.i(f"Reset {count} failed items for retry")
+                sys.exit()
+
+            # If --schedule flag is used, schedule URLs instead of downloading immediately
+            if args.schedule and args.URL:
+                from .download_scheduler import get_scheduler, ScheduleType
+                scheduler = get_scheduler()
+
+                schedule_type_map = {
+                    'once': ScheduleType.ONCE,
+                    'daily': ScheduleType.DAILY,
+                    'weekly': ScheduleType.WEEKLY,
+                    'monthly': ScheduleType.MONTHLY,
+                    'off_peak': ScheduleType.OFF_PEAK,
+                    'bandwidth_optimized': ScheduleType.BANDWIDTH_OPTIMIZED
+                }
+                schedule_type = schedule_type_map[args.schedule_type]
+
+                for url in args.URL:
+                    download_id = scheduler.schedule_download(
+                        url=url,
+                        scheduled_time=args.schedule,
+                        schedule_type=schedule_type,
+                        output_dir=args.output_dir,
+                        output_filename=args.output_filename
+                    )
+                    log.i(f"📅 Scheduled: {url} (ID: {download_id[:8]}...)")
+
+                log.i(f"📅 Scheduled {len(args.URL)} download(s)")
+                log.i("Use --scheduler-start to begin processing scheduled downloads")
+                sys.exit()
+
+            # If --queue flag is used, add URLs to queue instead of downloading
+            if args.queue and args.URL:
+                priority_map = {
+                    'low': Priority.LOW,
+                    'normal': Priority.NORMAL,
+                    'high': Priority.HIGH,
+                    'urgent': Priority.URGENT
+                }
+                priority = priority_map[args.queue_priority]
+
+                for url in args.URL:
+                    item_id = queue.add_item(
+                        url=url,
+                        priority=priority,
+                        output_dir=args.output_dir,
+                        output_filename=args.output_filename,
+                        max_retries=3
+                    )
+                    log.i(f"Added to queue: {url} (ID: {item_id})")
+
+                log.i(f"Added {len(args.URL)} item(s) to download queue")
+                log.i("Use --queue-start to begin processing the queue")
+                sys.exit()
+
+        except ImportError:
+            log.e("Download queue feature not available")
+            sys.exit(1)
+
+    # Handle scheduler management commands
+    scheduler_commands = [
+        args.scheduler_start, args.scheduler_stop, args.scheduler_list, args.scheduler_cancel
+    ]
+
+    if any(scheduler_commands):
+        try:
+            from .download_scheduler import get_scheduler, ScheduleType
+            scheduler = get_scheduler()
+
+            if args.scheduler_start:
+                scheduler.start_daemon()
+                log.i("📅 Download scheduler daemon started")
+                log.i("Use Ctrl+C to stop the daemon")
+                try:
+                    while True:
+                        time.sleep(1)
+                except KeyboardInterrupt:
+                    scheduler.stop_daemon()
+                    log.i("📅 Download scheduler daemon stopped")
+                sys.exit()
+
+            elif args.scheduler_stop:
+                scheduler.stop_daemon()
+                log.i("⏹️ Download scheduler daemon stopped")
+                sys.exit()
+
+            elif args.scheduler_list:
+                downloads = scheduler.list_scheduled_downloads()
+                if not downloads:
+                    log.i("No scheduled downloads found")
+                else:
+                    log.i(f"Found {len(downloads)} scheduled downloads:")
+                    for download in downloads:
+                        log.i(f"  ID: {download['id'][:8]}...")
+                        log.i(f"  URL: {download['url']}")
+                        log.i(f"  Status: {download['status']}")
+                        log.i(f"  Next run: {download['next_run']}")
+                        log.i(f"  Schedule: {download['schedule_type']} at {download['scheduled_time']}")
+                        log.i("  " + "-" * 50)
+                sys.exit()
+
+            elif args.scheduler_cancel:
+                if scheduler.cancel_download(args.scheduler_cancel):
+                    log.i(f"✅ Cancelled scheduled download: {args.scheduler_cancel}")
+                else:
+                    log.e(f"❌ Failed to cancel download: {args.scheduler_cancel}")
+                sys.exit()
+
+        except ImportError:
+            log.e("Download scheduler feature not available")
+            sys.exit(1)
+
+    # Handle analytics dashboard
+    if args.analytics_dashboard:
+        try:
+            from .analytics import start_dashboard
+            log.i(f"🚀 Starting analytics dashboard on port {args.analytics_port}")
+            server = start_dashboard(args.analytics_port)
+            log.i(f"📊 Analytics dashboard available at http://localhost:{args.analytics_port}")
+            log.i("Press Ctrl+C to stop the dashboard")
+            try:
+                while True:
+                    time.sleep(1)
+            except KeyboardInterrupt:
+                server.stop()
+                log.i("📊 Analytics dashboard stopped")
+            sys.exit()
+        except ImportError:
+            log.e("Analytics dashboard feature not available")
+            sys.exit(1)
+
     if args.debug:
         # Set level of root logger to DEBUG
         logging.getLogger().setLevel(logging.DEBUG)
@@ -1743,25 +2347,6 @@ def script_main(download, download_playlist, **kwargs):
 
     if args.m3u8:
         m3u8 = True
-
-    # Handle analytics commands
-    if args.analytics:
-        try:
-            from .analytics import start_dashboard
-            server = start_dashboard(args.analytics_port)
-            print("Press Ctrl+C to stop the analytics server")
-            try:
-                while True:
-                    time.sleep(1)
-            except KeyboardInterrupt:
-                server.stop()
-                print("\nAnalytics server stopped")
-                sys.exit()
-        except KeyboardInterrupt:
-            sys.exit(1)
-        except ImportError as e:
-            log.e(f"Analytics feature not available: {e}")
-            sys.exit(1)
 
     caption = True
     stream_id = args.format or args.stream or args.itag

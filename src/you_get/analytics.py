@@ -16,7 +16,17 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 from threading import Thread
 from urllib.parse import urlparse, parse_qs
 
-from .middleware import register_hook, DownloadEvent
+try:
+    from .middleware import register_hook, DownloadEvent
+except ImportError:
+    # Fallback if middleware is not available
+    def register_hook(event_type):
+        def decorator(func):
+            return func
+        return decorator
+
+    class DownloadEvent:
+        DOWNLOAD_COMPLETE = "download_complete"
 
 
 class AnalyticsManager:
@@ -166,7 +176,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
     
     def generate_dashboard_html(self):
         """Generate the dashboard HTML"""
-        return '''
+        # Load the HTML file
+        dashboard_path = os.path.join(os.path.dirname(__file__), 'dashboard.html')
+        try:
+            with open(dashboard_path, 'r', encoding='utf-8') as f:
+                return f.read()
+        except FileNotFoundError:
+            # Fallback HTML if file not found
+            return '''
 <!DOCTYPE html>
 <html>
 <head>
@@ -179,52 +196,27 @@ class DashboardHandler(BaseHTTPRequestHandler):
         .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 20px; }
         .stat-card { text-align: center; padding: 20px; }
         .stat-number { font-size: 2em; font-weight: bold; color: #2196F3; }
-        .chart { height: 300px; margin: 20px 0; }
     </style>
 </head>
 <body>
     <div class="container">
         <h1>You-Get Analytics Dashboard</h1>
-        
+        <p>Dashboard HTML file not found. Basic analytics available via API.</p>
         <div class="stats">
             <div class="stat-card">
                 <div class="stat-number" id="total-downloads">0</div>
                 <div>Total Downloads</div>
             </div>
-            <div class="stat-card">
-                <div class="stat-number" id="total-bytes">0</div>
-                <div>Total Data Downloaded</div>
-            </div>
-        </div>
-        
-        <div class="card">
-            <h3>Downloads by Site</h3>
-            <div id="sites-chart"></div>
-        </div>
-        
-        <div class="card">
-            <h3>Download Timeline</h3>
-            <div id="timeline-chart"></div>
         </div>
     </div>
-    
     <script>
-        function loadStats() {
-            fetch('/api/stats')
-                .then(response => response.json())
-                .then(data => {
-                    document.getElementById('total-downloads').textContent = data.total_downloads;
-                    document.getElementById('total-bytes').textContent = 
-                        (data.total_bytes / (1024*1024*1024)).toFixed(2) + ' GB';
-                });
-        }
-        
-        loadStats();
-        setInterval(loadStats, 5000);
+        fetch('/api/stats').then(r => r.json()).then(d => {
+            document.getElementById('total-downloads').textContent = d.total_downloads || 0;
+        });
     </script>
 </body>
 </html>
-        '''
+            '''
 
 
 class DashboardServer:
@@ -261,3 +253,9 @@ def start_dashboard(port=8080):
     server = DashboardServer(analytics, port)
     server.start()
     return server
+
+# Initialize analytics tracking when module is imported
+try:
+    _analytics_manager = AnalyticsManager()
+except Exception:
+    _analytics_manager = None  # Fail silently if analytics can't be initialized
