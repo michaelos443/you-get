@@ -71,8 +71,9 @@ def sprint(text, *colors):
     return "\33[{}m{content}\33[{}m".format(";".join([str(color) for color in colors]), RESET, content=text) if IS_ANSI_TERMINAL and colors else text
 
 def println(text, *colors):
-    """Print text to standard output."""
-    sys.stdout.write(sprint(text, *colors) + "\n")
+    """Print text to standard output (suppressed when QUIET)."""
+    if not QUIET:
+        sys.stdout.write(sprint(text, *colors) + "\n")
 
 def print_err(text, *colors):
     """Print text to standard error."""

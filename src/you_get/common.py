@@ -200,7 +200,10 @@ def general_m3u8_extractor(url, headers={}):
 
 def maybe_print(*s):
     try:
-        print(*s)
+        # Respect quiet mode
+        from .util import log
+        if not log.QUIET:
+            print(*s)
     except:
         pass
 
@@ -1053,6 +1056,11 @@ class SimpleProgressBar:
         )
 
     def update(self):
+        # Respect quiet mode
+        from .util import log
+        if log.QUIET:
+            return
+
         self.displayed = True
         bar_size = self.bar_size
         percent = round(self.received * 100 / self.total_size, 1)
@@ -1094,7 +1102,10 @@ class SimpleProgressBar:
 
     def done(self):
         if self.displayed:
-            print()
+            # Respect quiet mode
+            from .util import log
+            if not log.QUIET:
+                print()
             self.displayed = False
 
 
@@ -1107,6 +1118,11 @@ class PiecesProgressBar:
         self.received = 0
 
     def update(self):
+        # Respect quiet mode
+        from .util import log
+        if log.QUIET:
+            return
+
         self.displayed = True
         bar = '{0:>5}%[{1:<40}] {2}/{3}'.format(
             '', '=' * 40, self.current_piece, self.total_pieces
@@ -1123,7 +1139,10 @@ class PiecesProgressBar:
 
     def done(self):
         if self.displayed:
-            print()
+            # Respect quiet mode
+            from .util import log
+            if not log.QUIET:
+                print()
             self.displayed = False
 
 
@@ -1176,7 +1195,10 @@ def get_output_filename(urls, title, ext, output_dir, merge, **kwargs):
 def print_user_agent(faker=False):
     urllib_default_user_agent = 'Python-urllib/%d.%d' % sys.version_info[:2]
     user_agent = fake_headers['User-Agent'] if faker else urllib_default_user_agent
-    print('User Agent: %s' % user_agent)
+    # Respect quiet mode
+    from .util import log
+    if not log.QUIET:
+        print('User Agent: %s' % user_agent)
 
 def download_urls(
     urls, title, ext, total_size, output_dir='.', refer=None, merge=True,
@@ -1479,17 +1501,20 @@ def print_info(site_info, title, type, size, **kwargs):
     else:
         type_info = 'Unknown type (%s)' % type
 
-    maybe_print('Site:      ', site_info)
-    maybe_print('Title:     ', unescape_html(tr(title)))
-    print('Type:      ', type_info)
-    if type != 'm3u8':
-        print(
-            'Size:      ', round(size / 1048576, 2),
-            'MiB (' + str(size) + ' Bytes)'
-        )
-    if type == 'm3u8' and 'm3u8_url' in kwargs:
-        print('M3U8 Url:   {}'.format(kwargs['m3u8_url']))
-    print()
+    # Respect quiet mode
+    from .util import log
+    if not log.QUIET:
+        maybe_print('Site:      ', site_info)
+        maybe_print('Title:     ', unescape_html(tr(title)))
+        print('Type:      ', type_info)
+        if type != 'm3u8':
+            print(
+                'Size:      ', round(size / 1048576, 2),
+                'MiB (' + str(size) + ' Bytes)'
+            )
+        if type == 'm3u8' and 'm3u8_url' in kwargs:
+            print('M3U8 Url:   {}'.format(kwargs['m3u8_url']))
+        print()
 
 
 def mime_to_container(mime):

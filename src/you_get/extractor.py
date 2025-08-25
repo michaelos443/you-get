@@ -88,6 +88,10 @@ class VideoExtractor():
         #raise NotImplementedError()
 
     def p_stream(self, stream_id):
+        # Respect quiet mode
+        if log.QUIET:
+            return
+
         if stream_id in self.streams:
             stream = self.streams[stream_id]
         else:
@@ -135,6 +139,10 @@ class VideoExtractor():
         sys.stdout.flush()
 
     def p(self, stream_id=None):
+        # Respect quiet mode
+        if log.QUIET:
+            return
+
         maybe_print("site:                %s" % self.__class__.name)
         maybe_print("title:               %s" % self.title)
         if stream_id:

@@ -28,6 +28,8 @@ def output(video_extractor, pretty_print=True):
         extra["ua"] = ve.ua
     if extra:
         out["extra"] = extra
+    # JSON output should always be printed regardless of quiet mode
+    # as it's the primary output format when --json is used
     if pretty_print:
         print(json.dumps(out, indent=4, ensure_ascii=False))
     else:
