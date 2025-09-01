@@ -1043,14 +1043,15 @@ class SimpleProgressBar:
         self.received = 0
         self.speed = ''
         self.last_updated = time.time()
+        self.start_time = time.time()
 
         total_pieces_len = len(str(total_pieces))
         # 38 is the size of all statically known size in self.bar
         total_str = '%5s' % round(self.total_size / 1048576, 1)
         total_str_width = max(len(total_str), 5)
-        self.bar_size = self.term_size - 28 - 2 * total_pieces_len \
+        self.bar_size = self.term_size - 35 - 2 * total_pieces_len \
             - 2 * total_str_width
-        self.bar = '{:>4}%% ({:>%s}/%sMB) ├{:─<%s}┤[{:>%s}/{:>%s}] {}' % (
+        self.bar = '{:>4}%% ({:>%s}/%sMB) ├{:─<%s}┤[{:>%s}/{:>%s}] {} {}' % (
             total_str_width, total_str, self.bar_size, total_pieces_len,
             total_pieces_len
         )
@@ -1066,6 +1067,23 @@ class SimpleProgressBar:
         percent = round(self.received * 100 / self.total_size, 1)
         if percent >= 100:
             percent = 100
+
+        # Calculate ETA
+        eta = ''
+        if percent > 0 and percent < 100:
+            elapsed_time = time.time() - self.start_time
+            estimated_total_time = elapsed_time * 100 / percent
+            remaining_time = estimated_total_time - elapsed_time
+
+            # Format ETA
+            if remaining_time > 3600:
+                eta = '{:d}h{:02d}m'.format(int(remaining_time // 3600), int((remaining_time % 3600) // 60))
+            elif remaining_time > 60:
+                eta = '{:d}m{:02d}s'.format(int(remaining_time // 60), int(remaining_time % 60))
+            else:
+                eta = '{:d}s'.format(int(remaining_time))
+            eta = 'ETA: ' + eta
+
         dots = bar_size * int(percent) // 100
         plus = int(percent) - dots // bar_size * 100
         if plus > 0.8:
@@ -1077,7 +1095,7 @@ class SimpleProgressBar:
         bar = '█' * dots + plus
         bar = self.bar.format(
             percent, round(self.received / 1048576, 1), bar,
-            self.current_piece, self.total_pieces, self.speed
+            self.current_piece, self.total_pieces, self.speed, eta
         )
         sys.stdout.write('\r' + bar)
         sys.stdout.flush()
