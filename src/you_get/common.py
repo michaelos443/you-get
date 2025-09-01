@@ -1714,6 +1714,11 @@ def script_main(download, download_playlist, **kwargs):
         '-h', '--help', action='store_true',
         help='Print this help message and exit'
     )
+    parser.add_argument(
+        '--show-ua', action='store_true',
+        help='Print effective User-Agent(s) and exit'
+    )
+
 
     # Download history options
     history_grp = parser.add_argument_group(
@@ -1987,6 +1992,15 @@ def script_main(download, download_playlist, **kwargs):
     parser.add_argument('URL', nargs='*', help=argparse.SUPPRESS)
 
     args = parser.parse_args()
+
+    if getattr(args, 'show_ua', False):
+        # Print both default urllib UA and the internal fake UA for clarity
+        try:
+            print('Default urllib UA: Python-urllib/%d.%d' % sys.version_info[:2])
+            print('you-get fake UA:   %s' % fake_headers['User-Agent'])
+        except Exception:
+            print_user_agent(faker=True)
+        sys.exit()
 
     if args.help:
         print_version()

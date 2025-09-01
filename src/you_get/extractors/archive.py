@@ -11,7 +11,7 @@ def archive_download(url, output_dir='.', merge=True, info_only=False, **kwargs)
     mime, ext, size = url_info(source)
 
     print_info(site_info, title, mime, size)
-    if not info_only:
+    if not info_only:  # Check if info_only is True
         # Call the universal extractor
         download_urls([source], title, ext, size, output_dir, merge=merge)
 
