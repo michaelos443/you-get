@@ -1867,6 +1867,11 @@ def script_main(download, download_playlist, **kwargs):
         '--json', action='store_true',
         help='Print extracted URLs in JSON format'
     )
+    dry_run_grp.add_argument(
+        '--print-extractor', action='store_true',
+        help='Print the extractor module that would handle each URL and exit'
+    )
+
 
     download_grp = parser.add_argument_group('Download options')
     download_grp.add_argument(
@@ -2396,6 +2401,17 @@ def script_main(download, download_playlist, **kwargs):
         URLs.extend(args.input_file.read().splitlines())
         args.input_file.close()
     URLs.extend(args.URL)
+    # If only printing extractor mapping, resolve and exit early
+    if getattr(args, 'print_extractor', False):
+        for u in URLs:
+            try:
+                m, resolved = url_to_module(u)
+                name = getattr(m, '__name__', str(m))
+                print(f"{u} -> {name}")
+            except Exception as e:
+                print(f"{u} -> <error: {e}>")
+        sys.exit()
+
 
     if not URLs:
         parser.print_help()
