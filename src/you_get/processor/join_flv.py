@@ -1,9 +1,15 @@
 #!/usr/bin/env python
 
 import struct
+import os
+import logging
 from io import BytesIO
 
 TAG_TYPE_METADATA = 18
+TAG_TYPE_AUDIO = 8
+TAG_TYPE_VIDEO = 9
+
+logger = logging.getLogger(__name__)
 
 ##################################################
 # AMF0
@@ -202,28 +208,47 @@ def read_unsigned_medium_int(stream):
 
 def read_tag(stream):
     # header size: 15 bytes
-    header = stream.read(15)
-    if len(header) == 4:
-        return
-    x = struct.unpack('>IBBBBBBBBBBB', header)
-    previous_tag_size = x[0]
-    data_type = x[1]
-    body_size = (x[2] << 16) | (x[3] << 8) | x[4]
-    assert body_size < 1024 * 1024 * 128, 'tag body size too big (> 128MB)'
-    timestamp = (x[5] << 16) | (x[6] << 8) | x[7]
-    timestamp += x[8] << 24
-    assert x[9:] == (0, 0, 0)
-    body = stream.read(body_size)
-    return (data_type, timestamp, body_size, body, previous_tag_size)
-    #previous_tag_size = read_uint(stream)
-    #data_type = read_byte(stream)
-    #body_size = read_unsigned_medium_int(stream)
-    #assert body_size < 1024*1024*128, 'tag body size too big (> 128MB)'
-    #timestamp = read_unsigned_medium_int(stream)
-    #timestamp += read_byte(stream) << 24
-    #assert read_unsigned_medium_int(stream) == 0
-    #body = stream.read(body_size)
-    #return (data_type, timestamp, body_size, body, previous_tag_size)
+    try:
+        header = stream.read(15)
+        if len(header) < 15:
+            # End of file or incomplete tag
+            return None
+
+        x = struct.unpack('>IBBBBBBBBBBB', header)
+        previous_tag_size = x[0]
+        data_type = x[1]
+        body_size = (x[2] << 16) | (x[3] << 8) | x[4]
+
+        # Validate tag type
+        if data_type not in (TAG_TYPE_AUDIO, TAG_TYPE_VIDEO, TAG_TYPE_METADATA):
+            logger.debug(f"Invalid tag type: {data_type}")
+            return None
+
+        # Validate body size
+        if body_size > 1024 * 1024 * 128:
+            logger.debug(f"Tag body size too big: {body_size} bytes (> 128MB)")
+            return None
+
+        timestamp = (x[5] << 16) | (x[6] << 8) | x[7]
+        timestamp += x[8] << 24
+
+        # Validate stream ID (should be 0)
+        if x[9:] != (0, 0, 0):
+            logger.debug(f"Invalid stream ID: {x[9:]}")
+            return None
+
+        # Read the tag body
+        body = stream.read(body_size)
+
+        # Check if we got the full body
+        if len(body) < body_size:
+            logger.debug(f"Incomplete tag body: expected {body_size} bytes, got {len(body)} bytes")
+            return None
+
+        return (data_type, timestamp, body_size, body, previous_tag_size)
+    except Exception as e:
+        logger.debug(f"Error reading tag: {e}")
+        return None
 
 def write_tag(stream, tag):
     data_type, timestamp, body_size, body, previous_tag_size = tag
@@ -240,13 +265,23 @@ def write_tag(stream, tag):
     stream.write(body)
 
 def read_flv_header(stream):
-    assert stream.read(3) == b'FLV'
-    header_version = read_byte(stream)
-    assert header_version == 1
-    type_flags = read_byte(stream)
-    assert type_flags == 5
-    data_offset = read_uint(stream)
-    assert data_offset == 9
+    try:
+        header = stream.read(3)
+        if header != b'FLV':
+            return False
+        header_version = read_byte(stream)
+        if header_version != 1:
+            return False
+        type_flags = read_byte(stream)
+        if type_flags != 5:
+            return False
+        data_offset = read_uint(stream)
+        if data_offset != 9:
+            return False
+        return True
+    except Exception as e:
+        logger.debug(f"Error reading FLV header: {e}")
+        return False
 
 def write_flv_header(stream):
     stream.write(b'FLV')
@@ -260,11 +295,17 @@ def read_meta_data(stream):
     return meta_type, meta
 
 def read_meta_tag(tag):
-    data_type, timestamp, body_size, body, previous_tag_size = tag
-    assert data_type == TAG_TYPE_METADATA
-    assert timestamp == 0
-    assert previous_tag_size == 0
-    return read_meta_data(BytesIO(body))
+    try:
+        data_type, timestamp, body_size, body, previous_tag_size = tag
+        if data_type != TAG_TYPE_METADATA:
+            logger.debug(f"Expected metadata tag, got tag type {data_type}")
+            return None
+        # Some files might have non-zero timestamp or previous_tag_size for metadata
+        # We'll be more lenient here
+        return read_meta_data(BytesIO(body))
+    except Exception as e:
+        logger.debug(f"Error reading metadata tag: {e}")
+        return None
 
 #def write_meta_data(stream, meta_type, meta_data):
 #    assert isinstance(meta_type, basesting)
@@ -284,56 +325,192 @@ def write_meta_tag(stream, meta_type, meta_data):
 ##################################################
 
 def guess_output(inputs):
+    """Guess the output filename based on common prefix of input files.
+
+    Args:
+        inputs (list): List of input filenames
+
+    Returns:
+        str: Guessed output filename
+    """
     import os.path
-    inputs = map(os.path.basename, inputs)
+    inputs = list(map(os.path.basename, inputs))
     n = min(map(len, inputs))
+
+    # Find the longest common prefix
     for i in reversed(range(1, n)):
-        if len(set(s[:i] for s in inputs)) == 1:
+        prefixes = set(s[:i] for s in inputs)
+        if len(prefixes) == 1:
+            # If we have a common prefix like 'video_part', use it
+            if '_' in inputs[0][:i] and inputs[0][:i].rindex('_') < i - 1:
+                return inputs[0][:inputs[0][:i].rindex('_') + 1] + '.flv'
             return inputs[0][:i] + '.flv'
+
     return 'output.flv'
 
+def validate_flv(file_path):
+    """Validate if a file is a valid FLV file.
+
+    Args:
+        file_path (str): Path to the FLV file
+
+    Returns:
+        tuple: (is_valid, metadata) - Boolean indicating if file is valid and metadata if available
+    """
+    try:
+        if not os.path.exists(file_path):
+            logger.debug(f"File does not exist: {file_path}")
+            return False, None
+
+        if os.path.getsize(file_path) < 9:  # Minimum size for FLV header
+            logger.debug(f"File too small to be valid FLV: {file_path}")
+            return False, None
+
+        with open(file_path, 'rb') as f:
+            # Check header
+            if not read_flv_header(f):
+                logger.debug(f"Invalid FLV header: {file_path}")
+                return False, None
+
+            # Try to read metadata tag
+            meta_tag = read_tag(f)
+            if not meta_tag:
+                logger.debug(f"Could not read first tag: {file_path}")
+                return False, None
+
+            meta = read_meta_tag(meta_tag)
+            if not meta:
+                logger.debug(f"Could not read metadata: {file_path}")
+                return False, None
+
+            # Try to read at least one more tag to ensure file is not truncated
+            next_tag = read_tag(f)
+            if not next_tag:
+                logger.debug(f"File contains only metadata tag: {file_path}")
+                return False, None
+
+            return True, meta
+    except Exception as e:
+        logger.debug(f"Error validating FLV file {file_path}: {e}")
+        return False, None
+
 def concat_flv(flvs, output = None):
-    assert flvs, 'no flv file found'
+    """Concatenate multiple FLV files into one.
+
+    Args:
+        flvs (list): List of FLV file paths
+        output (str, optional): Output file path
+
+    Returns:
+        str: Path to the output file
+    """
+    if not flvs:
+        raise ValueError('No FLV files provided')
+
     import os.path
     if not output:
         output = guess_output(flvs)
     elif os.path.isdir(output):
         output = os.path.join(output, guess_output(flvs))
-    
-    print('Merging video parts...')
-    ins = [open(flv, 'rb') for flv in flvs]
-    for stream in ins:
-        read_flv_header(stream)
-    meta_tags = map(read_tag, ins)
-    metas = list(map(read_meta_tag, meta_tags))
-    meta_types, metas = zip(*metas)
-    assert len(set(meta_types)) == 1
-    meta_type = meta_types[0]
-    
-    # must merge fields: duration
-    # TODO: check other meta info, update other meta info
-    total_duration = sum(meta.get('duration') for meta in metas)
-    meta_data = metas[0]
-    meta_data.set('duration', total_duration)
-    
-    out = open(output, 'wb')
-    write_flv_header(out)
-    write_meta_tag(out, meta_type, meta_data)
-    timestamp_start = 0
-    for stream in ins:
-        while True:
-            tag = read_tag(stream)
-            if tag:
-                data_type, timestamp, body_size, body, previous_tag_size = tag
-                timestamp += timestamp_start
-                tag = data_type, timestamp, body_size, body, previous_tag_size
-                write_tag(out, tag)
-            else:
-                break
-        timestamp_start = timestamp
-    write_uint(out, previous_tag_size)
-    
-    return output
+
+    print('Validating video parts...')
+    valid_files = []
+    valid_metas = []
+
+    # Validate all input files
+    for flv in flvs:
+        is_valid, meta = validate_flv(flv)
+        if is_valid and meta:
+            valid_files.append(flv)
+            valid_metas.append(meta)
+        else:
+            print(f"Warning: Skipping corrupted or invalid file: {flv}")
+
+    if not valid_files:
+        raise ValueError('No valid FLV files found')
+
+    # Extract metadata types and ensure they're consistent
+    meta_types = [meta[0] for meta in valid_metas]
+    if len(set(meta_types)) != 1:
+        print("Warning: Inconsistent metadata types across files. Using the most common type.")
+        # Use the most common metadata type
+        from collections import Counter
+        meta_type = Counter(meta_types).most_common(1)[0][0]
+    else:
+        meta_type = meta_types[0]
+
+    # Extract metadata objects
+    metas = [meta[1] for meta in valid_metas]
+
+    print(f'Merging {len(valid_files)} valid video parts...')
+
+    try:
+        # Calculate total duration
+        total_duration = sum(meta.get('duration', 0) for meta in metas)
+
+        # Use the first file's metadata as base
+        meta_data = metas[0]
+        meta_data.set('duration', total_duration)
+
+        # Open output file
+        out = open(output, 'wb')
+        write_flv_header(out)
+        write_meta_tag(out, meta_type, meta_data)
+
+        # Process each valid file
+        timestamp_start = 0
+        previous_tag_size = 0
+
+        for flv in valid_files:
+            try:
+                with open(flv, 'rb') as stream:
+                    # Skip the header
+                    read_flv_header(stream)
+
+                    # Skip the first tag (metadata)
+                    first_tag = read_tag(stream)
+                    if not first_tag:
+                        print(f"Warning: Could not read metadata tag from {flv}, skipping file")
+                        continue
+
+                    # Read and write all remaining tags
+                    current_timestamp = 0
+                    while True:
+                        tag = read_tag(stream)
+                        if not tag:
+                            break
+
+                        data_type, timestamp, body_size, body, _ = tag
+                        current_timestamp = timestamp
+                        adjusted_timestamp = current_timestamp + timestamp_start
+                        tag = data_type, adjusted_timestamp, body_size, body, previous_tag_size
+                        write_tag(out, tag)
+                        previous_tag_size = body_size + 11  # 11 is the size of the tag header
+
+                    # Update timestamp for next file
+                    timestamp_start += current_timestamp
+            except Exception as e:
+                print(f"Warning: Error processing file {flv}: {e}")
+                continue
+
+        # Write final previous tag size
+        write_uint(out, previous_tag_size)
+        out.close()
+
+        print(f"Successfully merged {len(valid_files)} files into {output}")
+        return output
+
+    except Exception as e:
+        print(f"Error merging FLV files: {e}")
+        # Try to close and remove the output file if it exists
+        try:
+            if 'out' in locals() and not out.closed:
+                out.close()
+            if os.path.exists(output):
+                os.remove(output)
+        except:
+            pass
+        raise
 
 def usage():
     print('Usage: [python3] join_flv.py --output TARGET.flv flv...')
@@ -358,8 +535,15 @@ def main():
     if not args:
         usage()
         sys.exit(1)
-    
-    concat_flv(args, output)
+
+    try:
+        concat_flv(args, output)
+    except ValueError as e:
+        print(f"Error: {e}")
+        sys.exit(1)
+    except Exception as e:
+        print(f"Unexpected error: {e}")
+        sys.exit(1)
 
 if __name__ == '__main__':
     main()
