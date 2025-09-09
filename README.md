@@ -281,6 +281,22 @@ Downloading rms.jpg ...
 
 Otherwise, `you-get` will scrape the web page and try to figure out if there's anything interesting to you:
 
+### Extract text content from Wikipedia
+
+You can use `you-get` to extract and save the text content from Wikipedia articles in Markdown format:
+
+```
+$ you-get https://en.wikipedia.org/wiki/Free_software
+Site:       Wikipedia
+Title:      Free software
+Type:       Markdown
+Size:       0.12 MiB (123456 Bytes)
+
+Wikipedia article saved to: Free software.md
+```
+
+This feature is useful for offline reading, research, or creating local archives of Wikipedia articles.
+
 ```
 $ you-get https://kopasas.tumblr.com/post/69361932517
 Site:       Tumblr.com
@@ -453,6 +469,7 @@ Use `--url`/`-u` to get a list of downloadable resource URLs extracted from the 
 | 快手 | <https://www.kuaishou.com/>      |✓|✓| |
 | 抖音 | <https://www.douyin.com/>      |✓| | |
 | TikTok | <https://www.tiktok.com/>      |✓| | |
+| **Wikipedia** | <https://wikipedia.org/>      | | |✓|
 | 中国体育(TV) | <https://v.zhibo.tv/> </br><https://video.zhibo.tv/>    |✓| | |
 | 知乎 | <https://www.zhihu.com/>      |✓| | |
 

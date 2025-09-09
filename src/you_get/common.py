@@ -112,6 +112,7 @@ SITES = {
     'weibo'            : 'miaopai',
     'veoh'             : 'veoh',
     'vk'               : 'vk',
+    'wikipedia'        : 'wikipedia',
     'x'                : 'twitter',
     'xiaokaxiu'        : 'yixia',
     'xiaojiadianvideo' : 'fc2video',

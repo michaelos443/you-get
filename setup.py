@@ -56,7 +56,7 @@ setup(
 
     entry_points = {'console_scripts': proj_info['console_scripts']},
 
-    install_requires = ['dukpy'],
+    install_requires = ['dukpy', 'beautifulsoup4'],
     extras_require = {
         'socks': ['PySocks'],
     }
