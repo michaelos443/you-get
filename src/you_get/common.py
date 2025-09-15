@@ -151,6 +151,8 @@ m3u8 = False
 postfix = False
 prefix = None
 enhanced_progress = False
+quiet = False
+
 
 fake_headers = {
     'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
@@ -1447,13 +1449,15 @@ def download_urls(
                 log.w('Skipping %s: file already exists' % output_filepath)
             print()
             return
-        # Use enhanced progress bar if enabled
-        if enhanced_progress:
+        # Use enhanced progress bar if enabled (unless quiet)
+        if quiet:
+            bar = DummyProgressBar()
+        elif enhanced_progress:
             bar = EnhancedProgressBar(total_size, len(urls))
         else:
             bar = SimpleProgressBar(total_size, len(urls))
     else:
-        bar = PiecesProgressBar(total_size, len(urls))
+        bar = DummyProgressBar() if quiet else PiecesProgressBar(total_size, len(urls))
 
     if len(urls) == 1:
         url = urls[0]
@@ -2191,6 +2195,9 @@ def script_main(
     download_grp.add_argument('--enhanced-progress', action='store_true', default=False,
         help='Use enhanced progress bar with ETA, speed trends (↑↓→), peak speeds, stall detection, and detailed bandwidth statistics')
 
+    # Output control
+    download_grp.add_argument('-q', '--quiet', action='store_true', default=False,
+        help='Suppress non-error output (no logs, no progress bar)')
 
     parser.add_argument('URL', nargs='*', help=argparse.SUPPRESS)
 
@@ -2221,7 +2228,20 @@ def script_main(
     global postfix
     global prefix
     global enhanced_progress
+    global quiet
     output_filename = args.output_filename
+    # Apply quiet mode early: suppress non-error logs and progress output
+    if args.quiet:
+        quiet = True
+        try:
+            # Suppress info/debug/warning logs
+            from .util import log as _log
+            _log.i = lambda *a, **k: None
+            _log.d = lambda *a, **k: None
+            _log.w = lambda *a, **k: None
+        except Exception:
+            pass
+
     extractor_proxy = args.extractor_proxy
 
     info_only = args.info

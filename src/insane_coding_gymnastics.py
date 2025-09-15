@@ -3550,7 +3550,7 @@ def bubble_sort(arr: List[Any]) -> List[Any]:
     n = len(result)
 
     for i in range(n):
-        # Flag to optimize if no swaps are made in a pass
+        # Flag to check if any swaps were made
         swapped = False
 
         for j in range(0, n - i - 1):
@@ -3581,6 +3581,7 @@ def selection_sort(arr: List[Any]) -> List[Any]:
     for i in range(n):
         # Find the minimum element in the unsorted part
         min_idx = i
+        # Loop through the unsorted part
         for j in range(i + 1, n):
             if result[j] < result[min_idx]:
                 min_idx = j
