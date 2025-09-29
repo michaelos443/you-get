@@ -1867,11 +1867,13 @@ def script_main(download, download_playlist, **kwargs):
         '--json', action='store_true',
         help='Print extracted URLs in JSON format'
     )
-    dry_run_grp.add_argument(
-        '--print-extractor', action='store_true',
-        help='Print the extractor module that would handle each URL and exit'
-    )
 
+    # Introspection options
+    introspect_grp = parser.add_argument_group('Introspection options')
+    introspect_grp.add_argument(
+        '--print-extractor', action='store_true',
+        help='Only detect and print the extractor module that will handle each URL'
+    )
 
     download_grp = parser.add_argument_group('Download options')
     download_grp.add_argument(
@@ -2401,21 +2403,21 @@ def script_main(download, download_playlist, **kwargs):
         URLs.extend(args.input_file.read().splitlines())
         args.input_file.close()
     URLs.extend(args.URL)
-    # If only printing extractor mapping, resolve and exit early
-    if getattr(args, 'print_extractor', False):
-        for u in URLs:
-            try:
-                m, resolved = url_to_module(u)
-                name = getattr(m, '__name__', str(m))
-                print(f"{u} -> {name}")
-            except Exception as e:
-                print(f"{u} -> <error: {e}>")
-        sys.exit()
-
 
     if not URLs:
         parser.print_help()
         sys.exit()
+
+    # If user only wants to know which extractor would be used, detect and print it
+    if getattr(args, 'print_extractor', False):
+        for url in URLs:
+            try:
+                m, _ = url_to_module(url)
+                mod_name = getattr(m, '__name__', '')
+                print((mod_name.split('.')[-1]) or mod_name or 'unknown')
+            except Exception as e:
+                print(f"unknown ({e})")
+        sys.exit(0)
 
     socket.setdefaulttimeout(args.timeout)
 
