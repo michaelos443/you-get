@@ -1871,7 +1871,7 @@ def script_main(download, download_playlist, **kwargs):
     # Introspection options
     introspect_grp = parser.add_argument_group('Introspection options')
     introspect_grp.add_argument(
-        '--print-extractor', action='store_true',
+        '-E', '--print-extractor', action='store_true',
         help='Only detect and print the extractor module that will handle each URL'
     )
 
