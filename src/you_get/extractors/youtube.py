@@ -6,9 +6,8 @@ from ..extractor import VideoExtractor
 try:
     import dukpy
 except ImportError:
-    log.e('Please install dukpy in order to extract videos from YouTube:')
-    log.e('$ pip install dukpy')
-    exit(0)
+    dukpy = None
+    # Don't exit here - let individual functions handle the missing dependency
 from urllib.parse import urlparse, parse_qs, urlencode
 from xml.dom.minidom import parseString
 
@@ -206,6 +205,12 @@ class YouTube(VideoExtractor):
                 log.wtf(f'Server refused to provide video details. Returned status: {playerResponseStatus}.')
 
     def prepare(self, **kwargs):
+        if dukpy is None:
+            from ..util import log
+            log.e('Please install dukpy in order to extract videos from YouTube:')
+            log.e('$ pip install dukpy')
+            raise ImportError('dukpy is required for YouTube extraction')
+
         self.ua = 'Mozilla/5.0 (iPad; CPU OS 16_7_10 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1,gzip(gfe)'
 
         assert self.url or self.vid

@@ -823,6 +823,7 @@ def url_save(
             elif file_size != received + range_length:  # is it ever necessary?
                 received = 0
                 if bar:
+                    # Set bar
                     bar.received = 0
                 open_mode = 'wb'
 
@@ -2412,11 +2413,33 @@ def script_main(download, download_playlist, **kwargs):
     if getattr(args, 'print_extractor', False):
         for url in URLs:
             try:
-                m, _ = url_to_module(url)
+                m, processed_url = url_to_module(url)
                 mod_name = getattr(m, '__name__', '')
-                print((mod_name.split('.')[-1]) or mod_name or 'unknown')
+                extractor_name = (mod_name.split('.')[-1]) or mod_name or 'unknown'
+
+                # Get additional extractor information
+                site_info = getattr(m, 'site_info', 'Unknown Site')
+
+                # Check if extractor has specific attributes
+                has_playlist = hasattr(m, 'download_playlist') and callable(getattr(m, 'download_playlist'))
+
+                print(f"URL: {url}")
+                print(f"Extractor: {extractor_name}")
+                print(f"Site: {site_info}")
+                print(f"Module: {mod_name}")
+                print(f"Playlist Support: {'Yes' if has_playlist else 'No'}")
+
+                # Show if URL was redirected
+                if processed_url != url:
+                    print(f"Redirected to: {processed_url}")
+
+                print("-" * 50)
+
             except Exception as e:
-                print(f"unknown ({e})")
+                print(f"URL: {url}")
+                print(f"Extractor: unknown")
+                print(f"Error: {e}")
+                print("-" * 50)
         sys.exit(0)
 
     socket.setdefaulttimeout(args.timeout)
