@@ -1979,7 +1979,7 @@ def script_main(download, download_playlist, **kwargs):
         help='Use an HTTP proxy for downloading'
     )
     proxy_grp.add_argument(
-        '-y', '--extractor-proxy', metavar='HOST:PORT',
+        '-g', '-y', '--extractor-proxy', metavar='HOST:PORT',
         help='Use an HTTP proxy for extracting only'
     )
     proxy_grp.add_argument(

@@ -11,7 +11,7 @@ _you-get () {
     )
     opts_with_arg=(
         -F --format -O --output-filename -o --output-dir -p --player
-        -c --cookies -x --http-proxy -y --extractor-proxy -t --timeout
+        -c --cookies -x --http-proxy -g -y --extractor-proxy -t --timeout
     )
 
     # Do not complete non option names
