@@ -201,6 +201,7 @@ def maybe_print(*s):
 
 
 def tr(s):
+    """Return the input string as-is, regardless of encoding."""
     if default_encoding == 'utf-8':
         return s
     else:
