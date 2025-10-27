@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 
 """
+<<<<<<< HEAD
 join_ts.py
 
 A script to concatenate multiple .ts files into a single .ts file.
@@ -30,6 +31,29 @@ def guess_output(inputs: List[str]) -> str:
     Returns:
         str: The output file path.
     """
+=======
+TS File Concatenation Module
+
+This module provides functionality for concatenating multiple MPEG Transport Stream (TS) files
+into a single TS file. It's used by you-get when downloading videos that are split into
+multiple TS segments.
+
+The module can be used as a standalone script or imported as a library. When used as a script,
+it accepts command line arguments to specify input files and output destination.
+
+Example usage as a script:
+    python join_ts.py --output combined.ts segment1.ts segment2.ts segment3.ts
+
+Example usage as a library:
+    from you_get.processor.join_ts import concat_ts
+    concat_ts(['segment1.ts', 'segment2.ts', 'segment3.ts'], 'combined.ts')
+"""
+
+import struct
+from io import BytesIO
+
+def guess_output(inputs):
+>>>>>>> origin/feature/download-history-manager
     import os.path
 
     # Extract the base name (filename without path) from each input

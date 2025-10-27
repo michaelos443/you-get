@@ -1139,9 +1139,24 @@ class SimpleProgressBar:
         elif avg_speed >= 1024:
             self.speed = '{:4.0f} kB/s'.format(avg_speed / 1024)
         else:
+
             self.speed = '{:4.0f}  B/s'.format(avg_speed)
 
         self.last_updated = current_time
+
+        # Emit progress update event for middleware integration
+        try:
+            from .middleware import emit_event, DownloadEvent
+            progress_percent = (self.received / self.total_size * 100) if self.total_size > 0 else 0
+            emit_event(
+                DownloadEvent.PROGRESS_UPDATE,
+                total_size=self.total_size,
+                received=self.received,
+                progress_percent=progress_percent,
+                speed=self.speed
+            )
+        except ImportError:
+            pass  # Middleware not available, continue normally
         self.update()
 
     def update_piece(self, n: int) -> None:
@@ -1566,6 +1581,22 @@ def download_urls(
         launch_player(player, urls)
         return
 
+    # Initialize download history manager
+    download_id = None
+    try:
+        from .download_history import get_history_manager
+        history_manager = get_history_manager()
+
+        # Check if this URL was already downloaded
+        source_url = urls[0] if urls else None
+        if source_url and history_manager.is_downloaded(source_url):
+            log.w(f'URL already downloaded previously: {source_url}')
+            if not force:
+                print('Use --force to download again.')
+                return
+    except ImportError:
+        history_manager = None
+
     if not total_size:
         try:
             total_size = urls_size(urls, faker=faker, headers=headers)
@@ -1600,6 +1631,29 @@ def download_urls(
     history_id = download_history.add_download(
         url_for_history, title, output_filename, output_filepath, total_size or 0
     )
+
+    # Record download start in history (alternative approach for middleware integration)
+    source_url = url_for_history
+    if history_manager and source_url:
+        download_id = history_manager.record_download_start(
+            url=source_url,
+            title=title,
+            filepath=output_filepath
+        )
+
+    # Emit download start event
+    try:
+        from .middleware import emit_event, DownloadEvent
+        emit_event(
+            DownloadEvent.DOWNLOAD_START,
+            url=urls[0] if urls else None,
+            title=title,
+            filepath=output_filepath,
+            total_size=total_size
+        )
+    except ImportError:
+        pass  # Middleware not available, continue normally
+
 
     if total_size:
         if not force and os.path.exists(output_filepath) and not auto_rename\
@@ -1742,6 +1796,29 @@ def download_urls(
 
         else:
             print("Can't merge %s files" % ext)
+
+    # Record download completion in history
+    if history_manager and download_id:
+        try:
+            # Get actual file size
+            actual_size = os.path.getsize(output_filepath) if os.path.exists(output_filepath) else total_size
+            history_manager.record_download_complete(download_id, actual_size)
+        except Exception as e:
+            # If we can't record completion, record as failed
+            history_manager.record_download_failed(download_id, str(e))
+
+    # Emit download complete event
+    try:
+        from .middleware import emit_event, DownloadEvent
+        emit_event(
+            DownloadEvent.DOWNLOAD_COMPLETE,
+            url=urls[0] if urls else None,
+            title=title,
+            filepath=output_filepath,
+            total_size=total_size
+        )
+    except ImportError:
+        pass  # Middleware not available, continue normally
 
     print()
 
@@ -2244,6 +2321,27 @@ def script_main(
         help='Print this help message and exit'
     )
 
+    # Download history options
+    history_grp = parser.add_argument_group(
+        'Download history options'
+    )
+    history_grp.add_argument(
+        '--history', action='store_true',
+        help='Show download history'
+    )
+    history_grp.add_argument(
+        '--history-stats', action='store_true',
+        help='Show download statistics'
+    )
+    history_grp.add_argument(
+        '--export-history', metavar='FILE',
+        help='Export download history to JSON file'
+    )
+    history_grp.add_argument(
+        '--failed-downloads', action='store_true',
+        help='Show failed downloads that can be resumed'
+    )
+
     dry_run_grp = parser.add_argument_group(
         'Dry-run options', '(no actual downloading)'
     )
@@ -2418,6 +2516,59 @@ def script_main(
     if args.resume:
         resume_download(args.resume)
         # Continue with normal download flow after resume setup
+
+    # Handle additional download history commands from remote branch
+    if args.history_stats or args.export_history or args.failed_downloads:
+        try:
+            from .download_history import get_history_manager
+            history_manager = get_history_manager()
+
+            if args.history:
+                records = history_manager.get_download_history()
+                print("Download History:")
+                print("-" * 80)
+                for record in records:
+                    status_symbol = "✓" if record.status == "completed" else "✗" if record.status == "failed" else "⏳"
+                    size_str = f" ({record.file_size // 1024 // 1024} MB)" if record.file_size else ""
+                    print(f"{status_symbol} {record.download_date[:19]} | {record.title}{size_str}")
+                    print(f"   {record.url}")
+                    print(f"   → {record.filepath}")
+                    print()
+
+            if args.history_stats:
+                stats = history_manager.get_statistics()
+                print("Download Statistics:")
+                print("-" * 40)
+                print(f"Total downloads: {stats['total_downloads']}")
+                print(f"Completed: {stats.get('completed', 0)}")
+                print(f"Failed: {stats.get('failed', 0)}")
+                print(f"Pending: {stats.get('pending', 0)}")
+                if stats['total_size_bytes'] > 0:
+                    size_mb = stats['total_size_bytes'] / 1024 / 1024
+                    print(f"Total downloaded: {size_mb:.1f} MB")
+
+            if args.export_history:
+                history_manager.export_history(args.export_history)
+                print(f"History exported to: {args.export_history}")
+
+            if args.failed_downloads:
+                failed = history_manager.get_failed_downloads()
+                if failed:
+                    print("Failed/Pending Downloads:")
+                    print("-" * 80)
+                    for record in failed:
+                        print(f"[{record.status.upper()}] {record.title}")
+                        print(f"   {record.url}")
+                        print(f"   Date: {record.download_date[:19]}")
+                        print()
+                else:
+                    print("No failed or pending downloads found.")
+
+            sys.exit()
+        except ImportError:
+            log.e("Download history feature not available")
+            sys.exit(1)
+
 
     if args.debug:
         # Set level of root logger to DEBUG

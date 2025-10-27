@@ -43,8 +43,12 @@ class AcFun(VideoExtractor):
             currentVideoInfo = json_data.get('currentVideoInfo')
 
         else:
+<<<<<<< HEAD
             # URL format is not yet supported
             raise NotImplementedError("This AcFun URL format is not yet supported.")
+=======
+            raise NotImplementedError()         
+>>>>>>> origin/feature/download-history-manager
 
         if 'ksPlayJson' in currentVideoInfo:
             durationMillis = currentVideoInfo['durationMillis']
@@ -194,7 +198,11 @@ class AcFun(VideoExtractor):
             m3u8_url = getM3u8UrlFromCurrentVideoInfo(currentVideoInfo)
 
         else:
+<<<<<<< HEAD
             raise NotImplementedError("This AcFun URL format is not yet supported.")
+=======
+            raise NotImplementedError()
+>>>>>>> origin/feature/download-history-manager
 
         assert title and m3u8_url
         title = unescape_html(title)

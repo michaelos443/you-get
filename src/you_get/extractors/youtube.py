@@ -86,12 +86,17 @@ class YouTube(VideoExtractor):
             # Examples:
             #   Yla, ida - https://www.youtube.com/s/player/fb725ac8/player-plasma-ias-phone-sv_SE.vflset/base.js
             #   Hla, eda - https://www.youtube.com/s/player/2f238d39/player-plasma-ias-phone-en_US.vflset/base.js
+            #   WyE, bE7, Gsn - https://www.youtube.com/s/player/3bb1f723/player-plasma-ias-phone-sv_SE.vflset/base.js
             if not f1:
-                f0 = match1(js, r'c=([$\w]+)\[0\]\(c\),a\.set\(b,c\)')
+                f0 = match1(js, r'\w=([$\w]+)\[0\]\(\w\),\w\.set\(\w,\w\)')
                 f1 = match1(js, r'%s=\[([$\w]+)\]' % f0)
 
             f1def = match1(js, r'\W%s=(function\(\w+\).+?\)});' % re.escape(f1))
-            n = dukpy.evaljs('(%s)("%s")' % (f1def, n))
+            v1 = match1(f1def, r'if\(typeof ([$\w]+)==="undefined"\)')
+            v1def = match1(js, r'(var %s=[^;]+;)' % v1)
+            if not v1def:
+                v1def = ''
+            n = dukpy.evaljs('%s(%s)("%s")' % (v1def, f1def, n))
             return n
 
         u = urlparse(url)
@@ -201,7 +206,7 @@ class YouTube(VideoExtractor):
                 log.wtf(f'Server refused to provide video details. Returned status: {playerResponseStatus}.')
 
     def prepare(self, **kwargs):
-        self.ua = 'Mozilla/5.0 (Linux; Android 15) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.6723.73 Mobile Safari/537.36'
+        self.ua = 'Mozilla/5.0 (iPad; CPU OS 16_7_10 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1,gzip(gfe)'
 
         assert self.url or self.vid
 
@@ -281,6 +286,8 @@ class YouTube(VideoExtractor):
             for ct in caption_tracks:
                 ttsurl, lang = ct['baseUrl'], ct['languageCode']
 
+                if ttsurl.startswith('/'):
+                    ttsurl = 'https://www.youtube.com' + ttsurl
                 tts_xml = parseString(get_content(ttsurl))
                 transcript = tts_xml.getElementsByTagName('transcript')[0]
                 texts = transcript.getElementsByTagName('text')
