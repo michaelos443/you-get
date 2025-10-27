@@ -20,6 +20,8 @@ class DownloadEvent(Enum):
     DOWNLOAD_ERROR = "download_error"
     EXTRACTION_START = "extraction_start"
     EXTRACTION_COMPLETE = "extraction_complete"
+    VERIFICATION_START = "verification_start"
+    VERIFICATION_COMPLETE = "verification_complete"
 
 @dataclass
 class EventData:

@@ -1315,6 +1315,48 @@ def download_urls(
     except ImportError:
         pass  # Middleware not available, continue normally
 
+    # Perform content verification if enabled
+    args = kwargs.get('args')
+    if args and hasattr(args, 'verify_content') and args.verify_content:
+        try:
+            from .content_verifier import get_verifier
+            from .middleware import trigger_event, DownloadEvent
+
+            # Trigger verification start event
+            trigger_event(DownloadEvent.VERIFICATION_START, {
+                'filepath': output_filepath,
+                'url': urls[0] if urls else ''
+            })
+
+            verifier = get_verifier()
+            result = verifier.verify_content(
+                output_filepath,
+                source_url=urls[0] if urls else None,
+                check_duplicates=getattr(args, 'check_duplicates', True)
+            )
+
+            # Display verification results
+            if result.is_valid:
+                log.i(f"✅ Content verification passed: {os.path.basename(output_filepath)}")
+                if result.is_duplicate:
+                    log.w(f"⚠️  Duplicate detected: {result.duplicate_path}")
+                if getattr(args, 'show_checksums', False):
+                    log.i(f"🔐 {result.checksum}")
+            else:
+                log.e(f"❌ Content verification failed: {result.error}")
+
+            # Trigger verification complete event
+            trigger_event(DownloadEvent.VERIFICATION_COMPLETE, {
+                'filepath': output_filepath,
+                'result': result,
+                'url': urls[0] if urls else ''
+            })
+
+        except ImportError:
+            log.w("Content verification feature not available")
+        except Exception as e:
+            log.w(f"Content verification failed: {e}")
+
     print()
 
 
@@ -1922,6 +1964,26 @@ def script_main(download, download_playlist, **kwargs):
         help='Path to content categorization configuration file'
     )
     download_grp.add_argument(
+        '--verify-content', action='store_true',
+        help='Verify downloaded content integrity with checksums'
+    )
+    download_grp.add_argument(
+        '--check-duplicates', action='store_true', default=True,
+        help='Check for duplicate files during verification (default: enabled)'
+    )
+    download_grp.add_argument(
+        '--no-check-duplicates', dest='check_duplicates', action='store_false',
+        help='Disable duplicate file checking during verification'
+    )
+    download_grp.add_argument(
+        '--show-checksums', action='store_true',
+        help='Display file checksums after verification'
+    )
+    download_grp.add_argument(
+        '--verification-stats', action='store_true',
+        help='Show content verification statistics and exit'
+    )
+    download_grp.add_argument(
         '-p', '--player', metavar='PLAYER',
         help='Stream extracted URL to a PLAYER'
     )
@@ -2018,6 +2080,29 @@ def script_main(download, download_playlist, **kwargs):
     if args.version:
         print_version()
         sys.exit()
+
+    # Handle verification stats command
+    if args.verification_stats:
+        try:
+            from .content_verifier import get_verifier
+            verifier = get_verifier()
+            stats = verifier.get_verification_stats()
+
+            print("Content Verification Statistics:")
+            print("-" * 40)
+            print(f"Total verified files: {stats['total_verified']}")
+            print(f"Valid files: {stats['valid_files']}")
+            print(f"Invalid files: {stats['invalid_files']}")
+            print(f"Duplicate files detected: {stats['duplicate_files']}")
+
+            if stats['total_verified'] > 0:
+                success_rate = (stats['valid_files'] / stats['total_verified']) * 100
+                print(f"Success rate: {success_rate:.1f}%")
+
+            sys.exit()
+        except ImportError:
+            log.e("Content verification feature not available")
+            sys.exit(1)
 
     # Handle download history commands
     if args.history or args.history_stats or args.export_history or args.failed_downloads or args.smart_resume or args.smart_retry or args.cleanup_resume_data:
