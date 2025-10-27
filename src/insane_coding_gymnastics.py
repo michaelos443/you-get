@@ -2104,39 +2104,138 @@ class AVLTree:
 
     def __init__(self):
         """Initialize an empty AVL tree."""
-        self.root = None
+        self.root = None  # Initialize the root node
         self.size = 0
 
     def _height(self, node: Optional[AVLNode]) -> int:
         """
-        Get the height of a node.
+        Get the height of a node in the AVL tree.
+
+        The height of a node is defined as the number of edges on the longest path
+        from the node to a leaf. This is a critical metric in AVL trees as it's used
+        to calculate the balance factor and determine when rotations are needed.
+
+        Implementation Details:
+            - Returns the cached height value stored in the node for O(1) access
+            - Returns 0 for None nodes (null children), which represents the height
+              of an empty subtree
+            - Height is maintained and updated after every insertion/deletion operation
+            - Leaf nodes have a height of 1 (one edge to reach them from themselves)
 
         Args:
-            node: Node to get the height of
+            node (Optional[AVLNode]): Node to get the height of. Can be None to
+                represent an empty subtree.
 
         Returns:
-            The height of the node, or 0 if the node is None
+            int: The height of the node (number of edges to deepest leaf), or 0 if
+                the node is None. Always non-negative.
+
+        Examples:
+            >>> # Leaf node has height 1
+            >>> leaf = AVLNode(5)
+            >>> tree._height(leaf)  # Returns 1
+            >>> # None node has height 0
+            >>> tree._height(None)  # Returns 0
+            >>> # Internal node height is 1 + max(left_height, right_height)
         """
         return node.height if node else 0
 
     def _balance_factor(self, node: AVLNode) -> int:
         """
-        Calculate the balance factor of a node.
+        Calculate the balance factor of a node in the AVL tree.
+
+        The balance factor is the difference between the heights of the left and right
+        subtrees. This is the fundamental metric used to determine if a node is balanced
+        and what type of rotation (if any) is needed to restore balance.
+
+        Balance Factor Formula:
+            balance_factor = height(left_subtree) - height(right_subtree)
+
+        Balance Factor Interpretation:
+            - balance_factor = 0: Perfectly balanced (left and right heights equal)
+            - balance_factor = 1: Left-heavy by 1 (still balanced, acceptable)
+            - balance_factor = -1: Right-heavy by 1 (still balanced, acceptable)
+            - balance_factor = 2: Left-heavy by 2 (UNBALANCED, needs right rotation)
+            - balance_factor = -2: Right-heavy by 2 (UNBALANCED, needs left rotation)
+
+        AVL Tree Property:
+            For a valid AVL tree, the balance factor of every node must be in {-1, 0, 1}.
+            When this property is violated (|balance_factor| > 1), rotations are performed
+            to restore balance.
+
+        Rotation Selection Logic:
+            - balance_factor = 2 and left child's balance_factor >= 0: Right rotation (LL case)
+            - balance_factor = 2 and left child's balance_factor < 0: Left-Right rotation (LR case)
+            - balance_factor = -2 and right child's balance_factor <= 0: Left rotation (RR case)
+            - balance_factor = -2 and right child's balance_factor > 0: Right-Left rotation (RL case)
 
         Args:
-            node: Node to calculate the balance factor of
+            node (AVLNode): Node to calculate the balance factor of. Must not be None.
 
         Returns:
-            The balance factor of the node
+            int: The balance factor of the node. Positive values indicate left-heavy,
+                negative values indicate right-heavy, and 0 indicates perfect balance.
+                Valid range for balanced AVL tree: [-1, 0, 1].
+
+        Examples:
+            >>> # Balanced node
+            >>> tree._balance_factor(node)  # Returns 0, 1, or -1
+            >>> # Left-heavy unbalanced node (needs rotation)
+            >>> tree._balance_factor(node)  # Returns 2
+            >>> # Right-heavy unbalanced node (needs rotation)
+            >>> tree._balance_factor(node)  # Returns -2
         """
         return self._height(node.left) - self._height(node.right)
 
     def _update_height(self, node: AVLNode) -> None:
         """
-        Update the height of a node.
+        Update the height of a node based on its children's heights.
+
+        This method recalculates and updates the height value stored in a node after
+        structural changes (insertions, deletions, or rotations). The height is computed
+        using the standard tree height formula and cached in the node for efficient access.
+
+        Height Calculation Logic:
+            height(node) = 1 + max(height(left_child), height(right_child))
+
+        Explanation:
+            - The "1" represents the edge from the node to its child
+            - max() selects the taller subtree (longest path to a leaf)
+            - For leaf nodes: height = 1 + max(0, 0) = 1
+            - For nodes with one child: height = 1 + max(child_height, 0)
+            - For nodes with two children: height = 1 + max(left_height, right_height)
+
+        Why Height Caching Matters:
+            - Storing height in each node enables O(1) height queries
+            - Without caching, height calculation would be O(n) per query
+            - Critical for efficient balance factor calculation during insertions/deletions
+            - Must be updated after every structural change to maintain accuracy
+
+        When This Method Is Called:
+            - After inserting a new node (bottom-up during recursion unwinding)
+            - After deleting a node (bottom-up during recursion unwinding)
+            - After performing rotations (to update affected nodes)
+            - During tree rebalancing operations
 
         Args:
-            node: Node to update the height of
+            node (AVLNode): Node to update the height of. Must not be None.
+                The node's left and right children should already have correct heights.
+
+        Returns:
+            None: Modifies the node's height attribute in-place.
+
+        Side Effects:
+            - Updates node.height attribute
+            - Does not modify tree structure or child pointers
+
+        Examples:
+            >>> # Leaf node update
+            >>> leaf = AVLNode(5)
+            >>> tree._update_height(leaf)  # Sets leaf.height = 1
+            >>> # Internal node with two children
+            >>> node.left.height = 2
+            >>> node.right.height = 3
+            >>> tree._update_height(node)  # Sets node.height = 4 (1 + max(2, 3))
         """
         node.height = 1 + max(self._height(node.left), self._height(node.right))
 
@@ -4947,11 +5046,29 @@ class LinearRegression:
 
     def fit(self, X: np.ndarray, y: np.ndarray) -> None:
         """
-        Fit the linear regression model to the training data.
+        Fit the linear regression model using batch gradient descent.
 
-        Args:
-            X: Training features
-            y: Training target values
+        Parameters
+        ----------
+        X : ndarray of shape (n_samples, n_features)
+            Training design matrix.
+        y : ndarray of shape (n_samples,)
+            Target values corresponding to rows of X.
+
+        Returns
+        -------
+        None
+
+        Raises
+        ------
+        ValueError
+            If X and y have incompatible shapes.
+
+        Notes
+        -----
+        - Initializes weights to zeros and optimizes mean squared error via
+          gradient descent for `n_iterations` with step size `learning_rate`.
+        - Learned parameters are stored in `self.weights` and `self.bias`.
         """
         n_samples, n_features = X.shape
         self.weights = np.zeros(n_features)
@@ -5012,11 +5129,29 @@ class LogisticRegression:
 
     def fit(self, X: np.ndarray, y: np.ndarray) -> None:
         """
-        Fit the logistic regression model to the training data.
+        Fit the logistic regression model using batch gradient descent.
 
-        Args:
-            X: Training features
-            y: Training target values (binary)
+        Parameters
+        ----------
+        X : ndarray of shape (n_samples, n_features)
+            Training design matrix.
+        y : ndarray of shape (n_samples,)
+            Binary target values in {0, 1}.
+
+        Returns
+        -------
+        None
+
+        Raises
+        ------
+        ValueError
+            If X and y have incompatible shapes or if y is not binary.
+
+        Notes
+        -----
+        - Optimizes binary cross-entropy by updating `self.weights` and `self.bias`
+          with step size `learning_rate` for `n_iterations`.
+        - Uses the sigmoid link function.
         """
         n_samples, n_features = X.shape
         self.weights = np.zeros(n_features)
@@ -5071,8 +5206,21 @@ class KMeans:
         """
         Fit the K-means clustering model to the data.
 
-        Args:
-            X: Data points
+        Parameters
+        ----------
+        X : ndarray of shape (n_samples, n_features)
+            Input data points to be clustered.
+
+        Returns
+        -------
+        None
+
+        Notes
+        -----
+        - Initializes `n_clusters` centroids at random and iteratively assigns
+          points to nearest centroids, recomputing centroids until convergence
+          or `max_iterations` is reached.
+        - Learned centroids are stored in `self.centroids`.
         """
         n_samples, n_features = X.shape
 
@@ -5141,9 +5289,22 @@ class DecisionTreeClassifier:
         """
         Fit the decision tree classifier to the training data.
 
-        Args:
-            X: Training features
-            y: Training target values
+        Parameters
+        ----------
+        X : ndarray of shape (n_samples, n_features)
+            Training features.
+        y : ndarray of shape (n_samples,)
+            Class labels.
+
+        Returns
+        -------
+        None
+
+        Notes
+        -----
+        Grows the tree recursively using greedy splits until reaching
+        `max_depth` or `min_samples_split` constraints. The learned
+        tree structure is stored in `self.tree`.
         """
         self.tree = self._grow_tree(X, y)
 
@@ -5282,6 +5443,7 @@ class DecisionTreeClassifier:
         Returns:
             Predicted class labels
         """
+        # Return a list of predictions for each sample
         return np.array([self._traverse_tree(x, self.tree) for x in X])
 
     def _traverse_tree(self, x: np.ndarray, node: dict) -> Any:

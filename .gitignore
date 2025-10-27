@@ -91,3 +91,8 @@ _*
 
 .emacs*
 .vscode
+
+
+# Local test scripts that may contain credentials or demo keys
+stripe_test.py
+sentry_test.py

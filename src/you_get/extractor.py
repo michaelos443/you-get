@@ -37,6 +37,7 @@ def validate_url(url: str) -> str:
     if not parsed_url.scheme or parsed_url.scheme not in VALID_SCHEMES:
         parsed_url = parsed_url._replace(scheme="http")
     if not parsed_url.netloc:
+        # Check if the URL is a valid IP address
         raise ValueError(
             f"Invalid URL: {url} Missing netloc."
             f" Ensure the URL is valid and includes a scheme and netloc."
@@ -87,37 +88,68 @@ class VideoExtractor():
             url (str): The URL to download.
             **kwargs: Additional keyword arguments for proxy configuration and extraction.
         """
+        # Validate and normalize the URL
         url = validate_url(url)
         self.url = url
         self.vid = None
 
+        # Extract proxy configuration from kwargs
         extractor_proxy = kwargs.get('extractor_proxy')
 
+        # Set up proxy if provided
         if extractor_proxy:
             set_proxy(parse_host(extractor_proxy))
 
-        self.prepare(**kwargs)
-        if self.out:
-            return
-
-        if extractor_proxy:
-            unset_proxy()
-
         try:
+            # Prepare the extraction (may set self.out if already processed)
+            self.prepare(**kwargs)
+            if self.out:
+                return
+
+            # Sort and organize available streams
+            self._sort_streams()
+
+            # Extract video metadata and stream information
+            self.extract(**kwargs)
+
+            # Download the video content
+            self.download(**kwargs)
+
+        finally:
+            # Always clean up proxy settings, even if an error occurs
+            if extractor_proxy:
+                unset_proxy()
+
+    def _sort_streams(self) -> None:
+        """
+        Sorts and organizes available streams based on stream types.
+
+        This method attempts to sort streams by 'id' first, falling back to 'itag'
+        if 'id' is not available. This handles different stream type formats across
+        various video platforms.
+
+        Side Effects:
+            - Updates self.streams_sorted with organized stream data
+            - Logs errors if stream type keys are missing
+
+        Raises:
+            No exceptions are raised; errors are logged and fallback logic is applied.
+        """
+        try:
+            # Primary approach: sort by 'id' field
             self.streams_sorted = [
                 {'id': stream_type['id'], **self.streams[stream_type['id']]}
-                for stream_type in self.__class__.stream_types if stream_type['id'] in self.streams
+                for stream_type in self.__class__.stream_types
+                if stream_type['id'] in self.streams
             ]
         except KeyError as e:
-            log.e(f"Stream type missing key: {e}")
+            # Fallback approach: sort by 'itag' field for platforms using different format
+            log.e(f"Stream type missing 'id' key: {e}. Falling back to 'itag' sorting.")
             self.streams_sorted = [
-                dict([('itag', stream_type['itag'])] + list(self.streams[stream_type['itag']].items()))
-                for stream_type in self.__class__.stream_types if stream_type['itag'] in self.streams
+                {'itag': stream_type['itag'], **self.streams[stream_type['itag']]}
+                for stream_type in self.__class__.stream_types
+                if stream_type['itag'] in self.streams
             ]
-
-        self.extract(**kwargs)
-
-        self.download(**kwargs)
 
     def manage_proxy(self, proxy: Optional[str], action: str) -> None:
         """

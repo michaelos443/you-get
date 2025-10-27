@@ -21,6 +21,7 @@ def load_source(modname: str, filename: str):
 
 import os, json
 here = os.path.abspath(os.path.dirname(__file__))
+# Load project metadata from JSON file.
 proj_info = json.loads(open(os.path.join(here, PROJ_METADATA), encoding='utf-8').read())
 try:
     README = open(os.path.join(here, 'README.rst'), encoding='utf-8').read()
