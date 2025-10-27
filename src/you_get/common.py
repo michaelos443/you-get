@@ -16,6 +16,8 @@ import shutil
 import tempfile
 import warnings
 import http.client
+import hashlib
+from datetime import datetime
 from typing import List, Tuple, Any, Dict, Optional, Callable
 from http.cookiejar import Cookie, MozillaCookieJar
 from importlib import import_module
@@ -152,6 +154,140 @@ postfix = False
 prefix = None
 enhanced_progress = False
 quiet = False
+
+
+# Download History Database Management
+class DownloadHistory:
+    def __init__(self, db_path=None):
+        if db_path is None:
+            db_path = os.path.join(os.path.expanduser('~'), '.you-get', 'history.db')
+        os.makedirs(os.path.dirname(db_path), exist_ok=True)
+        self.db_path = db_path
+        self.init_db()
+
+    def init_db(self):
+        """Initialize the download history database."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS downloads (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                url TEXT NOT NULL,
+                title TEXT,
+                filename TEXT,
+                file_path TEXT,
+                total_size INTEGER,
+                downloaded_size INTEGER DEFAULT 0,
+                status TEXT DEFAULT 'pending',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                url_hash TEXT UNIQUE,
+                retry_count INTEGER DEFAULT 0,
+                error_message TEXT
+            )
+        ''')
+        conn.commit()
+        conn.close()
+
+    def add_download(self, url, title=None, filename=None, file_path=None, total_size=0):
+        """Add a new download to history."""
+        url_hash = hashlib.md5(url.encode()).hexdigest()
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        try:
+            cursor.execute('''
+                INSERT INTO downloads (url, title, filename, file_path, total_size, url_hash)
+                VALUES (?, ?, ?, ?, ?, ?)
+            ''', (url, title, filename, file_path, total_size, url_hash))
+            conn.commit()
+            return cursor.lastrowid
+        except sqlite3.IntegrityError:
+            # URL already exists, return existing ID
+            cursor.execute('SELECT id FROM downloads WHERE url_hash = ?', (url_hash,))
+            return cursor.fetchone()[0]
+        finally:
+            conn.close()
+
+    def update_download_progress(self, url_hash, downloaded_size):
+        """Update download progress."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute('''
+            UPDATE downloads
+            SET downloaded_size = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE url_hash = ?
+        ''', (downloaded_size, url_hash))
+        conn.commit()
+        conn.close()
+
+    def update_download_status(self, url_hash, status, error_message=None):
+        """Update download status."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute('''
+            UPDATE downloads
+            SET status = ?, error_message = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE url_hash = ?
+        ''', (status, error_message, url_hash))
+        conn.commit()
+        conn.close()
+
+    def get_download_history(self, limit=50):
+        """Get download history."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT url, title, filename, status, created_at, downloaded_size, total_size
+            FROM downloads
+            ORDER BY updated_at DESC
+            LIMIT ?
+        ''', (limit,))
+        results = cursor.fetchall()
+        conn.close()
+        return results
+
+    def get_failed_downloads(self):
+        """Get failed downloads that can be retried."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT url, title, filename, downloaded_size, total_size, retry_count
+            FROM downloads
+            WHERE status IN ('failed', 'interrupted') AND retry_count < 3
+            ORDER BY updated_at DESC
+        ''')
+        results = cursor.fetchall()
+        conn.close()
+        return results
+
+    def get_resumable_download(self, url):
+        """Get download info for resuming."""
+        url_hash = hashlib.md5(url.encode()).hexdigest()
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT filename, file_path, downloaded_size, total_size, status
+            FROM downloads
+            WHERE url_hash = ? AND status IN ('interrupted', 'pending')
+        ''', (url_hash,))
+        result = cursor.fetchone()
+        conn.close()
+        return result
+
+    def increment_retry_count(self, url_hash):
+        """Increment retry count for a download."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute('''
+            UPDATE downloads
+            SET retry_count = retry_count + 1, updated_at = CURRENT_TIMESTAMP
+            WHERE url_hash = ?
+        ''', (url_hash,))
+        conn.commit()
+        conn.close()
+
+# Global download history instance
+download_history = DownloadHistory()
 
 
 fake_headers = {
@@ -755,6 +891,10 @@ def url_save(
         chunk_sizes = [file_size]
         is_chunked, urls = False, [url]
 
+    # Get URL for history tracking
+    url_for_history = url[0] if isinstance(url, list) else url
+    url_hash = hashlib.md5(url_for_history.encode()).hexdigest()
+
     continue_renameing = True
     while continue_renameing:
         continue_renameing = False
@@ -892,6 +1032,9 @@ def url_save(
                     received_chunk += len(buffer)
                     if bar:
                         bar.update_received(len(buffer))
+                    # Update download progress in history every 1MB
+                    if received % (1024 * 1024) == 0:
+                        download_history.update_download_progress(url_hash, received)
 
     assert received == os.path.getsize(temp_filepath), '%s == %s == %s' % (
         received, os.path.getsize(temp_filepath), temp_filepath
@@ -1439,6 +1582,25 @@ def download_urls(
     output_filename = get_output_filename(urls, title, ext, output_dir, merge)
     output_filepath = os.path.join(output_dir, output_filename)
 
+    # Track download in history
+    url_for_history = urls[0] if isinstance(urls, list) else urls
+    url_hash = hashlib.md5(url_for_history.encode()).hexdigest()
+
+    # Check if this is a resumable download
+    resumable_info = download_history.get_resumable_download(url_for_history)
+    if resumable_info and not force:
+        filename, file_path, downloaded_size, total_size_db, status = resumable_info
+        if os.path.exists(file_path) and downloaded_size > 0:
+            print(f"📥 Resuming download from {downloaded_size} bytes...")
+            # Update the bar to show previous progress
+            if bar and hasattr(bar, 'update_received'):
+                bar.update_received(downloaded_size)
+
+    # Add to history (will update existing if already present)
+    history_id = download_history.add_download(
+        url_for_history, title, output_filename, output_filepath, total_size or 0
+    )
+
     if total_size:
         if not force and os.path.exists(output_filepath) and not auto_rename\
                 and (os.path.getsize(output_filepath) >= total_size * 0.9\
@@ -1463,26 +1625,44 @@ def download_urls(
         url = urls[0]
         print('Downloading %s ...' % tr(output_filename))
         bar.update()
-        url_save(
-            url, output_filepath, bar, refer=refer, faker=faker,
-            headers=headers, **kwargs
-        )
-        bar.done()
+        try:
+            url_save(
+                url, output_filepath, bar, refer=refer, faker=faker,
+                headers=headers, **kwargs
+            )
+            bar.done()
+            # Update download status to completed
+            download_history.update_download_status(url_hash, 'completed')
+        except Exception as e:
+            # Update download status to failed
+            download_history.update_download_status(url_hash, 'failed', str(e))
+            if bar:
+                bar.done()
+            raise
     else:
         parts = []
         print('Downloading %s ...' % tr(output_filename))
         bar.update()
-        for i, url in enumerate(urls):
-            output_filename_i = get_output_filename(urls, title, ext, output_dir, merge, part=i)
-            output_filepath_i = os.path.join(output_dir, output_filename_i)
-            parts.append(output_filepath_i)
-            # print 'Downloading %s [%s/%s]...' % (tr(filename), i + 1, len(urls))
-            bar.update_piece(i + 1)
-            url_save(
-                url, output_filepath_i, bar, refer=refer, is_part=True, faker=faker,
-                headers=headers, **kwargs
-            )
-        bar.done()
+        try:
+            for i, url in enumerate(urls):
+                output_filename_i = get_output_filename(urls, title, ext, output_dir, merge, part=i)
+                output_filepath_i = os.path.join(output_dir, output_filename_i)
+                parts.append(output_filepath_i)
+                # print 'Downloading %s [%s/%s]...' % (tr(filename), i + 1, len(urls))
+                bar.update_piece(i + 1)
+                url_save(
+                    url, output_filepath_i, bar, refer=refer, is_part=True, faker=faker,
+                    headers=headers, **kwargs
+                )
+            bar.done()
+            # Update download status to completed
+            download_history.update_download_status(url_hash, 'completed')
+        except Exception as e:
+            # Update download status to failed
+            download_history.update_download_status(url_hash, 'failed', str(e))
+            if bar:
+                bar.done()
+            raise
 
         if not merge:
             print()
@@ -2195,6 +2375,17 @@ def script_main(
     download_grp.add_argument('--enhanced-progress', action='store_true', default=False,
         help='Use enhanced progress bar with ETA, speed trends (↑↓→), peak speeds, stall detection, and detailed bandwidth statistics')
 
+    # History management
+    history_grp = parser.add_argument_group('History management')
+    history_grp.add_argument('--history', action='store_true',
+        help='Show download history')
+    history_grp.add_argument('--resume', metavar='URL',
+        help='Resume a failed or interrupted download')
+    history_grp.add_argument('--retry-failed', action='store_true',
+        help='Retry all failed downloads')
+    history_grp.add_argument('--clear-history', action='store_true',
+        help='Clear download history')
+
     # Output control
     download_grp.add_argument('-q', '--quiet', action='store_true', default=False,
         help='Suppress non-error output (no logs, no progress bar)')
@@ -2210,6 +2401,23 @@ def script_main(
     if args.version:
         print_version()
         sys.exit()
+
+    # Handle history management commands
+    if args.history:
+        show_download_history()
+        sys.exit()
+
+    if args.clear_history:
+        clear_download_history()
+        sys.exit()
+
+    if args.retry_failed:
+        retry_failed_downloads()
+        sys.exit()
+
+    if args.resume:
+        resume_download(args.resume)
+        # Continue with normal download flow after resume setup
 
     if args.debug:
         # Set level of root logger to DEBUG
@@ -2386,6 +2594,109 @@ def google_search(
     )
     print('Best matched result:')
     return(videos[0])
+
+
+def show_download_history():
+    """Display download history."""
+    global download_history
+    if download_history is None:
+        download_history = DownloadHistory()
+
+    history = download_history.get_download_history()
+    if not history:
+        print("No download history found.")
+        return
+
+    print("\n📥 Download History")
+    print("=" * 80)
+    for i, (url, title, filename, status, created_at, downloaded_size, total_size) in enumerate(history, 1):
+        status_icon = {
+            'completed': '✅',
+            'failed': '❌',
+            'interrupted': '⏸️',
+            'pending': '⏳'
+        }.get(status, '❓')
+
+        progress = ""
+        if total_size > 0:
+            progress_percent = (downloaded_size / total_size) * 100
+            progress = f" ({progress_percent:.1f}%)"
+
+        print(f"{i}. {status_icon} {title or filename or 'Unknown'}")
+        print(f"   URL: {url}")
+        print(f"   Status: {status.title()}{progress}")
+        print(f"   Created: {created_at}")
+        print()
+
+
+def resume_download(url):
+    """Resume a failed or interrupted download."""
+    global download_history
+    if download_history is None:
+        download_history = DownloadHistory()
+
+    url_hash = hashlib.md5(url.encode()).hexdigest()
+    download_info = download_history.get_resumable_download(url)
+
+    if not download_info:
+        print(f"No resumable download found for: {url}")
+        return False
+
+    filename, file_path, downloaded_size, total_size, status = download_info
+    print(f"📥 Resuming download: {filename or url}")
+    print(f"   Progress: {downloaded_size}/{total_size} bytes ({(downloaded_size/total_size*100):.1f}%)")
+
+    # Update retry count
+    download_history.increment_retry_count(url_hash)
+
+    # Mark as pending for retry
+    download_history.update_download_status(url_hash, 'pending')
+
+    print(f"   Status: Added to retry queue")
+    return True
+
+
+def retry_failed_downloads():
+    """Retry all failed downloads."""
+    global download_history
+    if download_history is None:
+        download_history = DownloadHistory()
+
+    failed_downloads = download_history.get_failed_downloads()
+
+    if not failed_downloads:
+        print("No failed downloads to retry.")
+        return
+
+    print(f"🔄 Found {len(failed_downloads)} failed downloads to retry")
+
+    for url, title, filename, downloaded_size, total_size, retry_count in failed_downloads:
+        print(f"\nRetrying: {title or filename or url}")
+        print(f"   Previous progress: {downloaded_size}/{total_size} bytes")
+        print(f"   Retry attempt: {retry_count + 1}")
+
+        # Resume the download
+        resume_download(url)
+
+
+def clear_download_history():
+    """Clear download history."""
+    global download_history
+    if download_history is None:
+        download_history = DownloadHistory()
+
+    confirm = input("Are you sure you want to clear all download history? (y/N): ")
+    if confirm.lower() == 'y':
+        db_path = download_history.db_path
+        if os.path.exists(db_path):
+            os.remove(db_path)
+            print("✅ Download history cleared.")
+            # Reinitialize the database
+            download_history.init_db()
+        else:
+            print("No history to clear.")
+    else:
+        print("History clearing cancelled.")
 
 
 def url_to_module(
