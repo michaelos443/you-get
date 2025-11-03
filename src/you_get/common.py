@@ -2473,16 +2473,26 @@ def script_main(
     download_grp.add_argument('--enhanced-progress', action='store_true', default=False,
         help='Use enhanced progress bar with ETA, speed trends (↑↓→), peak speeds, stall detection, and detailed bandwidth statistics')
 
-    # History management
-    history_grp = parser.add_argument_group('History management')
-    history_grp.add_argument('--history', action='store_true',
-        help='Show download history')
+    # Additional history management (extending the existing history group)
     history_grp.add_argument('--resume', metavar='URL',
         help='Resume a failed or interrupted download')
     history_grp.add_argument('--retry-failed', action='store_true',
         help='Retry all failed downloads')
     history_grp.add_argument('--clear-history', action='store_true',
         help='Clear download history')
+
+    # Queue management
+    queue_grp = parser.add_argument_group('Queue management')
+    queue_grp.add_argument('--add-to-queue', action='store_true',
+        help='Add URLs to download queue instead of downloading immediately')
+    queue_grp.add_argument('--process-queue', action='store_true',
+        help='Process all pending items in the download queue')
+    queue_grp.add_argument('--show-queue', action='store_true',
+        help='Display current queue status')
+    queue_grp.add_argument('--clear-queue', action='store_true',
+        help='Clear all items from the download queue')
+    queue_grp.add_argument('--remove-completed', action='store_true',
+        help='Remove completed items from the queue')
 
     # Output control
     download_grp.add_argument('-q', '--quiet', action='store_true', default=False,
@@ -2516,6 +2526,41 @@ def script_main(
     if args.resume:
         resume_download(args.resume)
         # Continue with normal download flow after resume setup
+
+    # Handle queue management commands
+    from .queue_manager import get_queue_manager
+
+    if args.show_queue:
+        get_queue_manager().show_queue()
+        sys.exit()
+
+    if args.clear_queue:
+        get_queue_manager().clear_queue()
+        sys.exit()
+
+    if args.remove_completed:
+        get_queue_manager().remove_completed()
+        sys.exit()
+
+    if args.process_queue:
+        # Process the queue with current options
+        queue_manager = get_queue_manager()
+
+        # Prepare download options from args
+        download_options = {
+            'output_dir': args.output_dir,
+            'merge': not args.no_merge,
+            'info_only': args.info,
+            'caption': not args.no_caption,
+            'password': args.password,
+        }
+
+        # Add stream format if specified
+        if args.format or args.stream or args.itag:
+            download_options['stream_id'] = args.format or args.stream or args.itag
+
+        queue_manager.process_queue(any_download, **download_options)
+        sys.exit()
 
     # Handle additional download history commands from remote branch
     if args.history_stats or args.export_history or args.failed_downloads:
@@ -2664,6 +2709,32 @@ def script_main(
 
     if not urls:
         parser.print_help()
+        sys.exit()
+
+    # Handle add-to-queue option
+    if args.add_to_queue:
+        from .queue_manager import get_queue_manager
+        queue_manager = get_queue_manager()
+
+        # Prepare options to store with URLs
+        queue_options = {
+            'output_dir': args.output_dir,
+            'merge': not args.no_merge,
+            'info_only': info_only,
+            'caption': caption,
+            'password': args.password,
+            'playlist': args.playlist,
+        }
+
+        # Add stream format if specified
+        if stream_id:
+            queue_options['stream_id'] = stream_id
+
+        # Add extractor proxy if specified
+        if extractor_proxy:
+            queue_options['extractor_proxy'] = extractor_proxy
+
+        queue_manager.add_urls(urls, **queue_options)
         sys.exit()
 
     socket.setdefaulttimeout(args.timeout)
