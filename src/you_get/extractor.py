@@ -1,21 +1,37 @@
 #!/usr/bin/env python
 
-"""Extractor module for you-get.
+"""Common extractor base classes for you-get.
 
-This module provides base classes for extracting video information and downloading
-videos from various websites. It defines the common interface and functionality
-for all specific site extractors.
+This module defines the shared interfaces and behaviours used by concrete
+site-specific extractors. It focuses on:
+
+* representing basic video metadata (URL, title, ID, streams)
+* providing helper methods for printing video information
+* orchestrating the prepare/extract/download lifecycle
 """
 
-from typing import Dict, List, Optional, Union, Any, Tuple
-from .common import match1, maybe_print, download_urls, get_filename, parse_host, set_proxy, unset_proxy, get_content, dry_run, player
+import os
+import sys
+from typing import Any, Dict, List, Optional, Union
+
+from .common import (
+    dry_run,
+    download_urls,
+    get_filename,
+    match1,
+    maybe_print,
+    parse_host,
+    player,
+    set_proxy,
+    unset_proxy,
+    get_content,
+)
 from .common import print_more_compatible as print
 from .util import log
 from . import json_output
-import os
-import sys
 
-class Extractor():
+
+class Extractor:
     """Base class for all extractors.
 
     This class provides basic properties and methods for extracting video information.
@@ -23,10 +39,13 @@ class Extractor():
     """
 
     def __init__(self, *args: str) -> None:
-        """Initialize the extractor with optional URL.
+        """Initialize the extractor with an optional URL.
 
-        Args:
-            *args: Variable length argument list, first argument is treated as URL if provided
+        Parameters
+        ----------
+        *args
+            Variable length argument list. If provided, the first argument is
+            treated as the URL associated with this extractor instance.
         """
         self.url: Optional[str] = None
         self.title: Optional[str] = None
@@ -37,7 +56,8 @@ class Extractor():
         if args:
             self.url = args[0]
 
-class VideoExtractor():
+
+class VideoExtractor(Extractor):
     """Base class for video extractors.
 
     This class extends the basic Extractor with video-specific properties and methods.
@@ -46,17 +66,16 @@ class VideoExtractor():
     """
 
     def __init__(self, *args: str) -> None:
-        """Initialize the video extractor with optional URL.
+        """Initialize the video extractor with an optional URL.
 
-        Args:
-            *args: Variable length argument list, first argument is treated as URL if provided
+        Parameters
+        ----------
+        *args
+            Variable length argument list. If provided, the first argument is
+            treated as the URL associated with this extractor instance.
         """
-        self.url: Optional[str] = None
-        self.title: Optional[str] = None
-        self.vid: Optional[str] = None
+        super().__init__(*args)
         self.m3u8_url: Optional[str] = None
-        self.streams: Dict[str, Dict[str, Any]] = {}
-        self.streams_sorted: List[Dict[str, Any]] = []
         self.audiolang: Optional[List[Dict[str, str]]] = None
         self.password_protected: bool = False
         self.dash_streams: Dict[str, Dict[str, Any]] = {}
@@ -67,9 +86,63 @@ class VideoExtractor():
         self.danmaku: Optional[str] = None
         self.lyrics: Optional[str] = None
 
-        if args:
-            self.url = args[0]
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+    def _prepare_with_proxy(self, **kwargs: Any) -> None:
+        """Run :meth:`prepare` while respecting an optional extractor proxy.
 
+        The ``extractor_proxy`` keyword argument is interpreted in the same
+        way as in the original implementation: when present and truthy, the
+        proxy is enabled only for the duration of :meth:`prepare`.
+        """
+        proxy = kwargs.get("extractor_proxy")
+        if proxy:
+            set_proxy(parse_host(proxy))
+
+        try:
+            self.prepare(**kwargs)
+        finally:
+            if proxy:
+                unset_proxy()
+
+    def _build_streams_sorted(self) -> None:
+        """Populate :attr:`streams_sorted` based on available stream types.
+
+        The method mirrors the original ``try/except`` behaviour that first
+        prefers an ``"id"`` key in ``stream_types`` and falls back to
+        ``"itag"`` for legacy extractors.
+        """
+        self.streams_sorted = []
+
+        stream_types = getattr(self.__class__, "stream_types", [])
+        if not stream_types:
+            return
+
+        def _build_for_key(key: str) -> List[Dict[str, Any]]:
+            results: List[Dict[str, Any]] = []
+            for stream_type in stream_types:
+                stream_id = stream_type.get(key)
+                if stream_id is None or stream_id not in self.streams:
+                    continue
+
+                stream_info = self.streams[stream_id]
+                merged: Dict[str, Any] = {key: stream_id}
+                merged.update(stream_info)
+                results.append(merged)
+            return results
+
+        # Prefer modern ``id``-based stream types, fall back to ``itag``
+        # to preserve compatibility with older extractors.
+        streams_sorted = _build_for_key("id")
+        if not streams_sorted:
+            streams_sorted = _build_for_key("itag")
+
+        self.streams_sorted = streams_sorted
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
     def download_by_url(self, url: str, **kwargs: Any) -> None:
         """Download video from URL.
 
@@ -83,19 +156,11 @@ class VideoExtractor():
         self.url = url
         self.vid = None
 
-        if 'extractor_proxy' in kwargs and kwargs['extractor_proxy']:
-            set_proxy(parse_host(kwargs['extractor_proxy']))
-        self.prepare(**kwargs)
+        self._prepare_with_proxy(**kwargs)
         if self.out:
             return
-        if 'extractor_proxy' in kwargs and kwargs['extractor_proxy']:
-            unset_proxy()
 
-        try:
-            self.streams_sorted = [dict([('id', stream_type['id'])] + list(self.streams[stream_type['id']].items())) for stream_type in self.__class__.stream_types if stream_type['id'] in self.streams]
-        except:
-            self.streams_sorted = [dict([('itag', stream_type['itag'])] + list(self.streams[stream_type['itag']].items())) for stream_type in self.__class__.stream_types if stream_type['itag'] in self.streams]
-
+        self._build_streams_sorted()
         self.extract(**kwargs)
 
         self.download(**kwargs)
@@ -113,17 +178,8 @@ class VideoExtractor():
         self.url = None
         self.vid = vid
 
-        if 'extractor_proxy' in kwargs and kwargs['extractor_proxy']:
-            set_proxy(parse_host(kwargs['extractor_proxy']))
-        self.prepare(**kwargs)
-        if 'extractor_proxy' in kwargs and kwargs['extractor_proxy']:
-            unset_proxy()
-
-        try:
-            self.streams_sorted = [dict([('id', stream_type['id'])] + list(self.streams[stream_type['id']].items())) for stream_type in self.__class__.stream_types if stream_type['id'] in self.streams]
-        except:
-            self.streams_sorted = [dict([('itag', stream_type['itag'])] + list(self.streams[stream_type['itag']].items())) for stream_type in self.__class__.stream_types if stream_type['itag'] in self.streams]
-
+        self._prepare_with_proxy(**kwargs)
+        self._build_streams_sorted()
         self.extract(**kwargs)
 
         self.download(**kwargs)
@@ -131,28 +187,35 @@ class VideoExtractor():
     def prepare(self, **kwargs: Any) -> None:
         """Prepare for extraction.
 
-        This method should be implemented by subclasses to prepare for video extraction.
-        It typically involves fetching video information, setting up necessary parameters,
-        and preparing stream information.
+        Subclasses should override this method to perform any site-specific
+        work required before extraction. Typical responsibilities include
+        fetching metadata, resolving playlist or video IDs, and populating
+        ``self.streams`` or ``self.dash_streams``.
 
-        Args:
-            **kwargs: Additional keyword arguments for preparation
+        Parameters
+        ----------
+        **kwargs
+            Arbitrary keyword arguments forwarded from the high-level
+            ``download_*`` helpers.
         """
         pass
-        #raise NotImplementedError()
+        # raise NotImplementedError()
 
     def extract(self, **kwargs: Any) -> None:
         """Extract video streams.
 
-        This method should be implemented by subclasses to extract video streams.
-        It typically involves parsing video source information and populating
-        the streams dictionary.
+        Subclasses should override this method to populate ``self.streams`` and
+        optionally ``self.dash_streams`` with concrete download URLs and
+        metadata.
 
-        Args:
-            **kwargs: Additional keyword arguments for extraction
+        Parameters
+        ----------
+        **kwargs
+            Arbitrary keyword arguments forwarded from the high-level
+            ``download_*`` helpers.
         """
         pass
-        #raise NotImplementedError()
+        # raise NotImplementedError()
 
     def p_stream(self, stream_id: str) -> None:
         """Print stream information.
@@ -181,17 +244,37 @@ class VideoExtractor():
         if 'quality' in stream:
             print("      quality:       %s" % stream['quality'])
 
-        if 'size' in stream and 'container' in stream and stream['container'].lower() != 'm3u8':
-            if stream['size'] != float('inf')  and stream['size'] != 0:
-                print("      size:          %s MiB (%s bytes)" % (round(stream['size'] / 1048576, 1), stream['size']))
+        if (
+            'size' in stream
+            and 'container' in stream
+            and stream['container'].lower() != 'm3u8'
+        ):
+            if stream['size'] not in (float('inf'), 0):
+                size_mib = round(stream['size'] / 1048576, 1)
+                print(
+                    "      size:          %s MiB (%s bytes)"
+                    % (size_mib, stream['size'])
+                )
 
         if 'm3u8_url' in stream:
-            print("      m3u8_url:      {}".format(stream['m3u8_url']))
+            print(f"      m3u8_url:      {stream['m3u8_url']}")
 
         if 'itag' in stream:
-            print("    # download-with: %s" % log.sprint("you-get --itag=%s [URL]" % stream_id, log.UNDERLINE))
+            print(
+                "    # download-with: %s"
+                % log.sprint(
+                    "you-get --itag=%s [URL]" % stream_id,
+                    log.UNDERLINE,
+                )
+            )
         else:
-            print("    # download-with: %s" % log.sprint("you-get --format=%s [URL]" % stream_id, log.UNDERLINE))
+            print(
+                "    # download-with: %s"
+                % log.sprint(
+                    "you-get --format=%s [URL]" % stream_id,
+                    log.UNDERLINE,
+                )
+            )
 
         print()
 
@@ -209,7 +292,10 @@ class VideoExtractor():
             stream = self.dash_streams[stream_id]
 
         maybe_print("    - title:         %s" % self.title)
-        print("       size:         %s MiB (%s bytes)" % (round(stream['size'] / 1048576, 1), stream['size']))
+        print(
+            "       size:         %s MiB (%s bytes)"
+            % (round(stream['size'] / 1048576, 1), stream['size'])
+        )
         print("        url:         %s" % self.url)
         print()
 
@@ -218,11 +304,15 @@ class VideoExtractor():
     def p(self, stream_id: Optional[Union[str, List]] = None) -> None:
         """Print video information.
 
-        This method prints information about the video and its streams.
+        This method prints information about the current video and one or more
+        of its streams.
 
-        Args:
-            stream_id: The ID of the stream to print information for, or None for the best quality,
-                      or an empty list to print all available streams
+        Parameters
+        ----------
+        stream_id
+            The ID of the stream to print information for. When ``None`` the
+            best-quality stream is printed. When an empty list, all available
+            streams are printed.
         """
         maybe_print("site:                %s" % self.__class__.name)
         maybe_print("title:               %s" % self.title)
@@ -242,8 +332,10 @@ class VideoExtractor():
             # Print DASH streams
             if self.dash_streams:
                 print("    [ DASH ] %s" % ('_' * 36))
-                itags = sorted(self.dash_streams,
-                               key=lambda i: -self.dash_streams[i]['size'])
+                itags = sorted(
+                    self.dash_streams,
+                    key=lambda i: -self.dash_streams[i]['size'],
+                )
                 for stream in itags:
                     self.p_stream(stream)
             # Print all other available streams
@@ -255,18 +347,18 @@ class VideoExtractor():
         if self.audiolang:
             print("audio-languages:")
             for i in self.audiolang:
-                print("    - lang:          {}".format(i['lang']))
-                print("      download-url:  {}\n".format(i['url']))
+                print(f"    - lang:          {i['lang']}")
+                print(f"      download-url:  {i['url']}\n")
 
         sys.stdout.flush()
 
     def p_playlist(self, stream_id: Optional[str] = None) -> None:
-        """Print playlist information.
+        """Print playlist-level information.
 
-        This method prints information about a video playlist.
-
-        Args:
-            stream_id: The ID of the stream to print information for
+        Parameters
+        ----------
+        stream_id
+            Reserved for future use; currently ignored.
         """
         maybe_print("site:                %s" % self.__class__.name)
         print("playlist:            %s" % self.title)
@@ -275,20 +367,33 @@ class VideoExtractor():
     def download(self, **kwargs: Any) -> None:
         """Download the video.
 
-        This method handles the actual downloading of the video based on the extracted
-        stream information. It supports various options like info-only mode, stream selection,
-        and caption downloading.
+        This method handles the actual downloading of the video using the
+        extracted stream information. It also supports an "info only" mode
+        and optional caption and auxiliary file downloads.
 
-        Args:
-            **kwargs: Additional keyword arguments for the download process, including:
-                      - json_output: Whether to output in JSON format
-                      - info_only: Whether to only display information without downloading
-                      - stream_id: The ID of the stream to download
-                      - index: Whether to use the compact display format
-                      - output_dir: Directory to save the downloaded files
-                      - merge: Whether to merge video parts
-                      - caption: Whether to download captions
-                      - keep_obj: Whether to keep the extractor object after download
+        Parameters
+        ----------
+        **kwargs
+            Keyword arguments that control the download behaviour. Common
+            options include:
+
+            ``json_output``
+                When true, emit JSON instead of human-readable output.
+            ``info_only``
+                When true, display information without downloading.
+            ``stream_id``
+                Explicit ID of the stream to download.
+            ``index``
+                When true, use the compact display format.
+            ``output_dir``
+                Directory where downloaded files are stored.
+            ``merge``
+                Whether to merge multiple parts after download.
+            ``caption``
+                Whether to download caption tracks when available.
+            ``keep_obj``
+                When false (default) reinitialise the extractor instance
+                after the download finishes.
         """
         if 'json_output' in kwargs and kwargs['json_output']:
             json_output.output(self)
@@ -315,13 +420,26 @@ class VideoExtractor():
             else:
                 # Download stream with the best quality
                 from .processor.ffmpeg import has_ffmpeg_installed
-                if has_ffmpeg_installed() and player is None and self.dash_streams or not self.streams_sorted:
-                    #stream_id = list(self.dash_streams)[-1]
-                    itags = sorted(self.dash_streams,
-                                   key=lambda i: -self.dash_streams[i]['size'])
+
+                if (
+                    (
+                        has_ffmpeg_installed()
+                        and player is None
+                        and self.dash_streams
+                    )
+                    or not self.streams_sorted
+                ):
+                    itags = sorted(
+                        self.dash_streams,
+                        key=lambda i: -self.dash_streams[i]['size'],
+                    )
                     stream_id = itags[0]
                 else:
-                    stream_id = self.streams_sorted[0]['id'] if 'id' in self.streams_sorted[0] else self.streams_sorted[0]['itag']
+                    stream_id = (
+                        self.streams_sorted[0]['id']
+                        if 'id' in self.streams_sorted[0]
+                        else self.streams_sorted[0]['itag']
+                    )
 
             if 'index' not in kwargs:
                 self.p(stream_id)
@@ -337,7 +455,7 @@ class VideoExtractor():
                 ext = self.dash_streams[stream_id]['container']
                 total_size = self.dash_streams[stream_id]['size']
 
-            if ext == 'm3u8' or ext == 'm4a':
+            if ext in {'m3u8', 'm4a'}:
                 ext = 'mp4'
 
             if not urls:
@@ -348,11 +466,17 @@ class VideoExtractor():
                 headers['User-Agent'] = self.ua
             if self.referer is not None:
                 headers['Referer'] = self.referer
-            download_urls(urls, self.title, ext, total_size, headers=headers,
-                          output_dir=kwargs['output_dir'],
-                          merge=kwargs['merge'],
-                          av=stream_id in self.dash_streams,
-                          vid=self.vid)
+            download_urls(
+                urls,
+                self.title,
+                ext,
+                total_size,
+                headers=headers,
+                output_dir=kwargs['output_dir'],
+                merge=kwargs['merge'],
+                av=stream_id in self.dash_streams,
+                vid=self.vid,
+            )
 
             if 'caption' not in kwargs or not kwargs['caption']:
                 print('Skipping captions or danmaku.')
@@ -360,7 +484,7 @@ class VideoExtractor():
 
             for lang in self.caption_tracks:
                 filename = '%s.%s.srt' % (get_filename(self.title), lang)
-                print('Saving %s ... ' % filename, end="", flush=True)
+                print(f'Saving {filename} ... ', end="", flush=True)
                 srt = self.caption_tracks[lang]
                 with open(os.path.join(kwargs['output_dir'], filename),
                           'w', encoding='utf-8') as x:
@@ -368,15 +492,23 @@ class VideoExtractor():
                 print('Done.')
 
             if self.danmaku is not None and not dry_run:
-                filename = '{}.cmt.xml'.format(get_filename(self.title))
-                print('Downloading {} ...\n'.format(filename))
-                with open(os.path.join(kwargs['output_dir'], filename), 'w', encoding='utf8') as fp:
+                filename = f"{get_filename(self.title)}.cmt.xml"
+                print(f'Downloading {filename} ...\n')
+                with open(
+                    os.path.join(kwargs['output_dir'], filename),
+                    'w',
+                    encoding='utf8',
+                ) as fp:
                     fp.write(self.danmaku)
 
             if self.lyrics is not None and not dry_run:
-                filename = '{}.lrc'.format(get_filename(self.title))
-                print('Downloading {} ...\n'.format(filename))
-                with open(os.path.join(kwargs['output_dir'], filename), 'w', encoding='utf8') as fp:
+                filename = f"{get_filename(self.title)}.lrc"
+                print(f'Downloading {filename} ...\n')
+                with open(
+                    os.path.join(kwargs['output_dir'], filename),
+                    'w',
+                    encoding='utf8',
+                ) as fp:
                     fp.write(self.lyrics)
 
             # For main_dev()
